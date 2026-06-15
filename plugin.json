@@ -1,0 +1,16 @@
+{
+  "id": "stem_mixer",
+  "name": "Stem Mixer",
+  "version": "1.0.0",
+  "private": false,
+  "nav": {
+    "label": "Stem Mixer",
+    "screen": "plugin-stem-mixer"
+  },
+  "screen": "screen.html",
+  "script": "screen.js",
+  "settings": {
+    "html": "settings.html"
+  },
+  "routes": "routes.py"
+}

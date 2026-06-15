@@ -1,0 +1,53 @@
+<div class="max-w-3xl mx-auto p-6 text-gray-300 space-y-4">
+  <div class="flex items-center justify-between">
+    <button onclick="showScreen('home')" class="px-3 py-1.5 bg-dark-700 hover:bg-dark-600 rounded-lg text-xs text-gray-300 transition">
+      ← Back
+    </button>
+  </div>
+
+  <div class="bg-dark-800/80 border border-gray-700 rounded-xl p-4 space-y-2">
+    <h2 class="text-xl font-semibold text-gray-100">Stem Mixer</h2>
+    <p class="text-sm text-gray-400">
+      Global processing controls for all songs/sloppaks. Per-stem level sliders are in the player under <strong>Stem Mixer</strong>.
+    </p>
+  </div>
+
+  <div id="stem-mixer-plugin-global-controls" class="bg-dark-800/80 border border-gray-700 rounded-xl p-4 space-y-3">
+    <div class="space-y-2 border-b border-gray-700/70 pb-3 mb-1">
+      <h3 class="text-sm font-semibold text-gray-200">Profiles</h3>
+      <div class="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-center">
+        <select id="stem-mixer-plugin-profile-select" class="bg-dark-700 border border-gray-600 rounded-lg px-2 py-1 text-xs text-gray-200"></select>
+        <button id="stem-mixer-plugin-profile-save" type="button" class="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-xs text-gray-200 transition">Save</button>
+        <button id="stem-mixer-plugin-profile-update" type="button" class="px-2 py-1 bg-dark-600 hover:bg-dark-500 rounded text-xs text-gray-200 transition">Update</button>
+        <button id="stem-mixer-plugin-profile-delete" type="button" class="px-2 py-1 bg-red-900/70 hover:bg-red-800 rounded text-xs text-gray-100 transition">Del</button>
+      </div>
+      <p class="text-xs text-gray-500">Profiles are global and shared across all songs.</p>
+    </div>
+
+    <div class="space-y-2 border-b border-gray-700/70 pb-3 mb-1">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-gray-200">Output Autolevel</h3>
+        <button id="stem-mixer-plugin-autolevel" type="button" class="px-2 py-1 bg-dark-600 hover:bg-dark-500 rounded text-xs text-gray-300 transition">
+          Output autolevel
+        </button>
+      </div>
+      <p class="text-xs text-gray-500">
+        When output autolevel is active, it regulates the global song volume so output loudness (dB) stays similar across all songs.
+      </p>
+    </div>
+
+    <div class="space-y-2 border-b border-gray-700/70 pb-3 mb-1">
+      <h3 class="text-sm font-semibold text-gray-200">Stem Volumes</h3>
+      <div id="stem-mixer-plugin-stem-rows" class="space-y-2"></div>
+    </div>
+
+    <h3 class="text-sm font-semibold text-gray-200">Global EQ</h3>
+    <div id="stem-mixer-plugin-eq-rows" class="flex items-end justify-between gap-2 overflow-x-auto py-1"></div>
+    <div class="flex items-center gap-2 pt-1">
+      <button id="stem-mixer-plugin-flat-eq" type="button" class="px-2 py-1 bg-dark-600 hover:bg-dark-500 rounded text-xs text-gray-300 transition">
+        Flat EQ
+      </button>
+      <span id="stem-mixer-plugin-mode-note" class="text-xs text-gray-500"></span>
+    </div>
+  </div>
+</div>
