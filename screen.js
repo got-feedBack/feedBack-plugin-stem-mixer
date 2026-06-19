@@ -1017,11 +1017,18 @@
     }
 
     function ensureMixerButton() {
-        const controls = document.getElementById('player-controls');
+        // Prefer the v3 host slot for plugin player controls. The v3 player wraps
+        // its transport, so #player-controls' "close" button is a NESTED
+        // descendant — controls.insertBefore(btn, closeBtn) then throws
+        // "node before which ... is not a child of this node" and the button
+        // never mounts. Use the slot when present; fall back to the v2 player.
+        const slot = (window.slopsmith && window.slopsmith.ui &&
+            typeof window.slopsmith.ui.playerControlSlot === 'function')
+            ? window.slopsmith.ui.playerControlSlot() : null;
+        const controls = slot || document.getElementById('player-controls');
         if (!controls) return;
         if (mixerButton && document.body.contains(mixerButton)) return;
 
-        const closeBtn = controls.querySelector('button:last-child');
         const btn = document.createElement('button');
         btn.id = 'btn-stem-mixer';
         btn.className = 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-300 transition';
@@ -1040,8 +1047,14 @@
                 : 'px-3 py-1.5 bg-blue-900/50 rounded-lg text-xs text-blue-200 transition';
         });
 
-        if (closeBtn) controls.insertBefore(btn, closeBtn);
-        else controls.appendChild(btn);
+        if (slot) {
+            slot.appendChild(btn);
+        } else {
+            // Legacy v2 player: only insertBefore a genuine DIRECT child, else append.
+            const closeBtn = controls.querySelector(':scope > button:last-child');
+            if (closeBtn && closeBtn.parentNode === controls) controls.insertBefore(btn, closeBtn);
+            else controls.appendChild(btn);
+        }
 
         mixerButton = btn;
     }
