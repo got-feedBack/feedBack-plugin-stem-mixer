@@ -10,7 +10,11 @@
   "screen": "screen.html",
   "script": "screen.js",
   "settings": {
-    "html": "settings.html"
+    "html": "settings.html",
+    "category": "audio"
   },
-  "routes": "routes.py"
+  "routes": "routes.py",
+  "category": "audio",
+  "description": "Per-stem volume mixing during playback.",
+  "icon": "assets/thumb.svg"
 }
