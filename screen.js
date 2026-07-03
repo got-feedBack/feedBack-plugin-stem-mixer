@@ -1209,10 +1209,11 @@
         if (obs) return;
         obs = new MutationObserver((mutations) => {
             if (mutationsTouchAudio(mutations)) {
-                // Audio topology changed — legacy-mode element caches are stale.
-                stemAudioMapCache = null;
-                stemsActiveCache = null;
-                stemNodes = Object.create(null);
+                // Audio topology changed — every cached mapping AND the
+                // applied-levels set are stale (audio elements that mount after
+                // a prior applyStoredState() must still receive their volumes,
+                // so appliedLevels must be cleared too, not just the maps).
+                invalidateAudioCaches();
             } else if (uiAlreadyMounted()) {
                 return;
             }
