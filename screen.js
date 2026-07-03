@@ -64,6 +64,23 @@
     let stemsBridgeByStem = Object.create(null);
     let stemBootstrapTimers = [];
     let hideStylesInstalled = false;
+    // Perf caches (see setupObservers): the whole-document audio scans and the
+    // per-stem volume pushes used to run on every player-DOM mutation, which
+    // profiled at 8-17% of main-thread time during playback. Audio topology
+    // only changes on song load / audio-element mount, so cache and invalidate
+    // on those events instead of recomputing per update.
+    let stemAudioMapCache = null;
+    let stemsActiveCache = null;
+    let appliedLevels = Object.create(null);
+    let lastUiUpdateAt = 0;
+    const tokenReCache = Object.create(null);
+
+    function invalidateAudioCaches() {
+        stemAudioMapCache = null;
+        stemsActiveCache = null;
+        stemNodes = Object.create(null);
+        appliedLevels = Object.create(null);
+    }
 
     function cloneState(state) {
         return {
@@ -145,14 +162,20 @@
 
     function isStemsPluginActive() {
         if (window.stems) return true;
-        if (document.getElementById('stems-mixer')) return true;
-        const audios = document.querySelectorAll('#player audio, #player-controls audio, audio');
-        for (let i = 0; i < audios.length; i += 1) {
-            const audio = audios[i];
-            const src = safeDecodeUrl(String(audio.currentSrc || audio.src || '')).toLowerCase();
-            if (src.includes('/stems/')) return true;
+        if (stemsActiveCache !== null) return stemsActiveCache;
+        let active = false;
+        if (document.getElementById('stems-mixer')) {
+            active = true;
+        } else {
+            const audios = document.querySelectorAll('audio');
+            for (let i = 0; i < audios.length; i += 1) {
+                const audio = audios[i];
+                const src = safeDecodeUrl(String(audio.currentSrc || audio.src || '')).toLowerCase();
+                if (src.includes('/stems/')) { active = true; break; }
+            }
         }
-        return false;
+        stemsActiveCache = active;
+        return active;
     }
 
     function canonicalStemId(stemId) {
@@ -213,12 +236,18 @@
     }
 
     function getStemAudioMap() {
+        if (stemAudioMapCache) return stemAudioMapCache;
         const map = Object.create(null);
-        const audios = document.querySelectorAll('#player audio, #player-controls audio, audio');
+        const audios = document.querySelectorAll('audio');
         const hasToken = (text, token) => {
             if (!text || !token) return false;
-            const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(text);
+            let re = tokenReCache[token];
+            if (!re) {
+                const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                re = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+                tokenReCache[token] = re;
+            }
+            return re.test(text);
         };
         const looksLikeStemSource = (text, stem) => {
             if (!text) return false;
@@ -248,6 +277,7 @@
                 }
             });
         });
+        stemAudioMapCache = map;
         return map;
     }
 
@@ -369,16 +399,22 @@
     function setStemVolume(stem, level, skipSave) {
         const clamped = Math.max(0, Math.min(1, Number(level) || 0));
         const canonical = canonicalStemId(stem);
-        const map = getStemAudioMap();
-        if (map[canonical]) {
-            map[canonical].volume = clamped;
-            map[canonical].muted = false;
-        }
-        ensureStemNodes();
-        if (stemNodes[canonical]) {
-            stemNodes[canonical].gain.value = clamped;
+        // In worklet mode (stems plugin present) there are no per-stem <audio>
+        // elements — the level goes through window.stems. Skip the element map
+        // and node graph entirely so this path never touches the DOM.
+        if (!window.stems) {
+            const map = getStemAudioMap();
+            if (map[canonical]) {
+                map[canonical].volume = clamped;
+                map[canonical].muted = false;
+            }
+            ensureStemNodes();
+            if (stemNodes[canonical]) {
+                stemNodes[canonical].gain.value = clamped;
+            }
         }
         setStemVolumeViaStemsApi(canonical, clamped);
+        appliedLevels[canonical] = clamped;
 
         if (!skipSave) {
             const state = getCurrentState();
@@ -538,6 +574,12 @@
         if (!isStemsPluginActive()) ensureAudioContext();
         ensureStemNodes();
         STEM_KEYS.forEach((stem) => {
+            // Idempotence: skip stems whose level was already pushed. Without
+            // this, every UI-update pass re-wrote button classes/aria in the
+            // stems plugin (via stems.setVolume), whose DOM mutations re-armed
+            // our own MutationObserver — a self-sustaining ~12 Hz loop.
+            // appliedLevels is cleared on song load, so new songs re-push.
+            if (appliedLevels[stem] === state.levels[stem]) return;
             setStemVolume(stem, state.levels[stem], true);
         });
         applyEqToGraph(state.eq);
@@ -928,7 +970,7 @@
     }
 
     function ensureMixerPanel() {
-        if (mixerPanel && document.body.contains(mixerPanel)) return mixerPanel;
+        if (mixerPanel && mixerPanel.isConnected) return mixerPanel;
         profileSelect = null;
 
         mixerPanel = document.createElement('div');
@@ -1027,7 +1069,7 @@
             ? window.slopsmith.ui.playerControlSlot() : null;
         const controls = slot || document.getElementById('player-controls');
         if (!controls) return;
-        if (mixerButton && document.body.contains(mixerButton)) return;
+        if (mixerButton && mixerButton.isConnected) return;
 
         const btn = document.createElement('button');
         btn.id = 'btn-stem-mixer';
@@ -1076,14 +1118,23 @@
         hideDefaultStemButtons();
         hideStemsSettingsOptions();
         applyStoredState();
+        // Discard mutation records produced by our own DOM writes above so the
+        // observer callback never re-queues an update we just caused.
+        if (obs) obs.takeRecords();
     }
 
     function queueUiUpdate() {
-        if (uiUpdateTimer) clearTimeout(uiUpdateTimer);
+        if (uiUpdateTimer) return;
+        // Trailing-edge with a max cadence: under a continuous mutation stream
+        // the old clear+reset debounce fired steadily every ~80 ms. Fire fast
+        // when idle, but never more than ~2x/second while the DOM is churning.
+        const since = Date.now() - lastUiUpdateAt;
+        const delay = Math.max(80, 500 - since);
         uiUpdateTimer = setTimeout(() => {
             uiUpdateTimer = null;
+            lastUiUpdateAt = Date.now();
             onUiUpdate();
-        }, 80);
+        }, delay);
     }
 
     function isRelevantUiMutation(mutations) {
@@ -1124,9 +1175,48 @@
         return false;
     }
 
+    function mutationsTouchAudio(mutations) {
+        for (let i = 0; i < mutations.length; i += 1) {
+            const m = mutations[i];
+            const lists = [m.addedNodes, m.removedNodes];
+            for (let k = 0; k < 2; k += 1) {
+                const nodes = lists[k];
+                if (!nodes || !nodes.length) continue;
+                for (let j = 0; j < nodes.length; j += 1) {
+                    const n = nodes[j];
+                    if (!n || n.nodeType !== 1) continue;
+                    if (n.tagName === 'AUDIO') return true;
+                    if (n.firstElementChild && n.querySelector('audio')) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // True when everything onUiUpdate() would (re)build already exists — the
+    // common steady state during playback. Checked BEFORE the per-record
+    // relevance walk so the callback is a few property reads on the ~60/s
+    // player-DOM churn instead of closest() walks + a queued update pass.
+    function uiAlreadyMounted() {
+        if (!mixerButton || !mixerButton.isConnected) return false;
+        if (!mixerPanel || !mixerPanel.isConnected) return false;
+        const rowsHost = document.getElementById('stem-mixer-plugin-eq-rows');
+        if (rowsHost && rowsHost.dataset.stemMixerBuilt !== '1') return false;
+        return true;
+    }
+
     function setupObservers() {
         if (obs) return;
         obs = new MutationObserver((mutations) => {
+            if (mutationsTouchAudio(mutations)) {
+                // Audio topology changed — every cached mapping AND the
+                // applied-levels set are stale (audio elements that mount after
+                // a prior applyStoredState() must still receive their volumes,
+                // so appliedLevels must be cleared too, not just the maps).
+                invalidateAudioCaches();
+            } else if (uiAlreadyMounted()) {
+                return;
+            }
             if (!isRelevantUiMutation(mutations)) return;
             queueUiUpdate();
         });
@@ -1137,6 +1227,9 @@
     if (typeof originalPlaySong === 'function') {
         window.playSong = async function (...args) {
             const result = await originalPlaySong.apply(this, args);
+            // New song: audio elements and stems-plugin gain nodes are
+            // recreated, so every cached mapping and pushed level is stale.
+            invalidateAudioCaches();
             setTimeout(queueUiUpdate, 50);
             scheduleStemVolumeBootstrapSync();
             return result;
@@ -1149,6 +1242,10 @@
             const result = originalShowScreen.apply(this, args);
             const next = args[0];
             if (next !== 'player') closeMixer();
+            // Screen changes are when new mount points (plugin screen hosts,
+            // settings panels) appear — sweep once here instead of relying on
+            // the mutation observer to catch every screen's DOM.
+            setTimeout(queueUiUpdate, 50);
             return result;
         };
     }
