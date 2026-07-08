@@ -1223,6 +1223,16 @@
         obs.observe(document.body, { childList: true, subtree: true });
     }
 
+    // Node-only export hook for tests; browsers fall through to DOM wiring.
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = {
+            STEM_KEYS, EQ_BANDS, DEFAULT_STATE, STEM_ALIASES,
+            sanitizeState, cloneState, canonicalStemId, safeDecodeUrl, stemIdFromUrl,
+            loadState, saveState, loadProfiles, saveProfiles,
+        };
+        return;
+    }
+
     const originalPlaySong = window.playSong;
     if (typeof originalPlaySong === 'function') {
         window.playSong = async function (...args) {
