@@ -43,6 +43,9 @@
 
     let mixerButton = null;
     let mixerPanel = null;
+    let mixerPanelHeader = null;
+    let registeredFaders = false;
+    let chipAttached = false;
     let obs = null;
     let profileSelect = null;
     let pluginProfileSelect = null;
@@ -428,18 +431,56 @@
         stemBootstrapTimers = [];
     }
 
+    // True once the new song's stems are actually addressable — either as <audio>
+    // elements we can find, or through the stems plugin's own state.
+    function stemsReachable() {
+        if (window.stems && typeof window.stems.getState === 'function') {
+            try {
+                const s = window.stems.getState();
+                if (s && Object.keys(s).length) return true;
+            } catch (e) { /* stems plugin mid-rebuild */ }
+        }
+        return Object.keys(getStemAudioMap()).length > 0;
+    }
+
+    // Push the stored levels at the new song until they actually land.
+    //
+    // This used to be five fixed timeouts ending at 1800 ms — a guess at when the
+    // audio would exist. When it guessed wrong (a sloppak still being extracted,
+    // the stems plugin still rebuilding its graph) every push hit nothing, the
+    // ladder ran out, and the song played at full volume on every stem with the
+    // user's mixer settings sitting right there in the UI, apparently applied.
+    //
+    // So: poll instead of guess. Retry until the stems are reachable, push once
+    // more when they are, then stop. Bounded, because a song genuinely without
+    // stems must not leave a timer running forever.
     function scheduleStemVolumeBootstrapSync() {
         clearStemBootstrapTimers();
-        const delays = [120, 320, 650, 1100, 1800];
-        delays.forEach((delay) => {
-            const timer = setTimeout(() => {
-                const state = getCurrentState();
-                STEM_KEYS.forEach((stem) => {
-                    setStemVolume(stem, state.levels[stem], true);
-                });
-            }, delay);
-            stemBootstrapTimers.push(timer);
-        });
+        const INTERVAL_MS = 200;
+        const MAX_WAIT_MS = 12000;   // generous: covers a cold sloppak extraction
+        let waited = 0;
+        let landed = false;
+
+        const tick = () => {
+            const state = getCurrentState();
+            const reachable = stemsReachable();
+            if (reachable) {
+                // Force the write (skipSave, and past the appliedLevels
+                // idempotence guard) — the audio is new, so whatever that guard
+                // thinks was already applied was applied to the PREVIOUS song's
+                // nodes.
+                appliedLevels = Object.create(null);
+                STEM_KEYS.forEach((stem) => setStemVolume(stem, state.levels[stem], true));
+                if (landed) return;          // second successful push — settled, stop.
+                landed = true;               // …once more next tick, in case the
+                                             // graph was still wiring up under us.
+            }
+            waited += INTERVAL_MS;
+            if (waited >= MAX_WAIT_MS) return;   // no stems in this song; give up quietly
+            stemBootstrapTimers.push(setTimeout(tick, INTERVAL_MS));
+        };
+
+        stemBootstrapTimers.push(setTimeout(tick, 120));
     }
 
     function applyEqToGraph(eqValues) {
@@ -992,10 +1033,17 @@
             'display:none'
         ].join(';');
 
+        // The title row doubles as the pane header: the host's pop-out chip is
+        // appended here (it right-aligns itself with margin-left:auto, hence the
+        // flex). data-pane-header is the hook attachChip() looks for.
         const title = document.createElement('div');
-        title.textContent = 'Stem Mixer';
-        title.style.cssText = 'font-size:13px;font-weight:700;letter-spacing:0.02em;color:#eaf0ff;margin-bottom:12px;';
+        title.setAttribute('data-pane-header', '');
+        title.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;letter-spacing:0.02em;color:#eaf0ff;margin-bottom:12px;';
+        const titleText = document.createElement('span');
+        titleText.textContent = 'Stem Mixer';
+        title.appendChild(titleText);
         mixerPanel.appendChild(title);
+        mixerPanelHeader = title;
 
         const state = getCurrentState();
 
@@ -1114,6 +1162,12 @@
         ensurePluginScreenControls();
         ensureMixerButton();
         ensureMixerPanel();
+        // Both are one-shot and guarded, so riding the existing sweep costs a
+        // boolean check per pass and needs no new lifecycle of its own. The chip
+        // in particular must wait for the panel to exist before it has anything
+        // to attach to.
+        registerAudioMixFaders();
+        attachPaneChip();
         syncUiForCompatibilityMode();
         hideDefaultStemButtons();
         hideStemsSettingsOptions();
@@ -1205,6 +1259,71 @@
         return true;
     }
 
+    // ── audio-mix faders ─────────────────────────────────────────────────────
+    // Publish each stem on the host's audio-mix capability. Two things fall out:
+    //
+    //   1. The stems appear in the host's own mixer, next to the song fader,
+    //      instead of only inside our panel.
+    //   2. A DETACHED pane can drive them. A popped-out pane runs in another JS
+    //      realm — no AudioContext, no <audio>, none of the graph below — so the
+    //      capability bus is the only way its sliders can reach setStemVolume().
+    //      This registration IS the bridge; without it a pane would be a row of
+    //      sliders wired to nothing.
+    //
+    // Values are 0..100 with a '%' unit to match the host's song fader, and are
+    // scaled to the 0..1 our state uses.
+    function registerAudioMixFaders() {
+        const api = window.feedBack && window.feedBack.audio;
+        if (!api || typeof api.registerFader !== 'function') return;
+        if (registeredFaders) return;
+        registeredFaders = true;
+
+        STEM_KEYS.forEach((stem) => {
+            api.registerFader({
+                id: `${PLUGIN_ID}:${stem}`,
+                label: STEM_LABELS[stem],
+                unit: '%',
+                min: 0,
+                max: 100,
+                step: 1,
+                defaultValue: 100,
+                getValue: () => Math.round((getCurrentState().levels[stem] ?? 1) * 100),
+                setValue: (v) => {
+                    setStemVolume(stem, (Number(v) || 0) / 100);
+                    // A write can arrive from the host mixer or from a detached
+                    // pane, neither of which touches our sliders — so re-sync the
+                    // UI here rather than waiting for the observer's next sweep.
+                    // applyStateToUi assigns input.value, which fires no 'input'
+                    // event, so this cannot loop back into setStemVolume.
+                    applyStateToUi(getCurrentState());
+                },
+            });
+        });
+    }
+
+    // ── Detachable pane ──────────────────────────────────────────────────────
+    // The panel is a fixed overlay pinned over the player (z-index 220). It is
+    // exactly the kind of option-heavy dialog that is in the way when you want to
+    // see the highway, and gone when you want the faders. Hand it the host's
+    // standard pop-out chip and it becomes a window you can leave open — across
+    // song switches, on a second monitor, minimized to the tray.
+    //
+    // Core owns the chip, the hiding, and the "bring it back" stub. All we do is
+    // point at the element. Nothing here runs on an older host: no panes API, no
+    // chip, and the panel behaves exactly as before.
+    function attachPaneChip() {
+        const panes = window.feedBack && window.feedBack.panes;
+        if (!panes || typeof panes.attachChip !== 'function') return;
+        if (chipAttached || !mixerPanel || !mixerPanel.isConnected) return;
+        // The pane itself is declared in plugin.json (`panes`), so the host has
+        // already registered it — and can open it from the rail or the tray even
+        // if the user never opens our panel. If that registration is missing,
+        // there is nothing to attach a chip to.
+        if (!panes.get(PLUGIN_ID)) return;
+        chipAttached = true;
+        panes.attachChip(mixerPanel, PLUGIN_ID, { header: mixerPanelHeader || undefined });
+    }
+
     function setupObservers() {
         if (obs) return;
         obs = new MutationObserver((mutations) => {
@@ -1214,9 +1333,16 @@
                 // a prior applyStoredState() must still receive their volumes,
                 // so appliedLevels must be cleared too, not just the maps).
                 invalidateAudioCaches();
-            } else if (uiAlreadyMounted()) {
+                // …and then RE-PUSH them. Falling through to the relevance gate
+                // below used to drop the levels on the floor: stem <audio>
+                // elements do not live under #player, so isRelevantUiMutation()
+                // is false for precisely the mutation that just invalidated
+                // everything. The caches were cleared and nothing ever refilled
+                // them, so a new song played at full volume on every stem.
+                queueUiUpdate();
                 return;
             }
+            if (uiAlreadyMounted()) return;
             if (!isRelevantUiMutation(mutations)) return;
             queueUiUpdate();
         });
@@ -1244,6 +1370,29 @@
             scheduleStemVolumeBootstrapSync();
             return result;
         };
+    }
+
+    // Re-apply on the song's own signal, not on a stopwatch.
+    //
+    // playSong() resolves as soon as the highway WebSocket is opened — the stem
+    // audio for the new song does not exist yet. The bootstrap ladder above
+    // guesses at when it will (120…1800 ms), and for a sloppak that has to be
+    // extracted, or when the stems plugin rebuilds its graph, that guess expires
+    // into an empty room: the levels are pushed at stems that aren't there, and
+    // the new song plays every stem at full volume.
+    //
+    // `song:ready` fires when the chart is fully streamed — and, unlike the
+    // playSong wrapper, it fires on ARRANGEMENT switches too, which recreate the
+    // audio just the same. Invalidating and re-pushing here means the levels land
+    // whenever the audio actually shows up, however long that takes. The ladder
+    // stays as a belt-and-braces for hosts that predate the event.
+    const bus = window.feedBack;
+    if (bus && typeof bus.on === 'function') {
+        bus.on('song:ready', () => {
+            invalidateAudioCaches();
+            queueUiUpdate();
+            scheduleStemVolumeBootstrapSync();
+        });
     }
 
     const originalShowScreen = window.showScreen;
