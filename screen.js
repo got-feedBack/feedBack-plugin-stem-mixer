@@ -1028,9 +1028,14 @@
             'backdrop-filter:blur(6px)',
             'box-shadow:0 12px 38px rgba(0,0,0,0.52)',
             'max-height:70vh',
-            'overflow:auto',
-            'display:none'
+            'overflow:auto'
         ].join(';');
+        // Hide with `hidden`, NOT an inline `display:none`. While the panel is
+        // popped out, the pane host neutralises its placement with .fb-paned and
+        // forces it visible; when it docks back and that class is removed, an
+        // inline display:none would reassert itself and the panel would return
+        // invisible. `hidden` composes cleanly instead. See docs/plugin-panes.md.
+        mixerPanel.hidden = true;
 
         // The title row doubles as the pane header: the host's pop-out chip is
         // appended here (it right-aligns itself with margin-left:auto, hence the
@@ -1129,8 +1134,8 @@
                 ctx.resume().catch(() => {});
             }
             const panel = ensureMixerPanel();
-            const open = panel.style.display !== 'none';
-            panel.style.display = open ? 'none' : '';
+            const open = !panel.hidden;
+            panel.hidden = open;
             btn.className = open
                 ? 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-300 transition'
                 : 'px-3 py-1.5 bg-blue-900/50 rounded-lg text-xs text-blue-200 transition';
@@ -1150,7 +1155,7 @@
 
     function closeMixer() {
         if (!mixerPanel) return;
-        mixerPanel.style.display = 'none';
+        mixerPanel.hidden = true;
         if (mixerButton) {
             mixerButton.className = 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-300 transition';
         }
