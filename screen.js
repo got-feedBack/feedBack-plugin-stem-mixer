@@ -44,8 +44,7 @@
     let mixerButton = null;
     let mixerPanel = null;
     let mixerPanelHeader = null;
-    let registeredFaders = false;
-    let chipAttached = false;
+    let paneRegistered = false;
     let obs = null;
     let profileSelect = null;
     let pluginProfileSelect = null;
@@ -1166,8 +1165,7 @@
         // boolean check per pass and needs no new lifecycle of its own. The chip
         // in particular must wait for the panel to exist before it has anything
         // to attach to.
-        registerAudioMixFaders();
-        attachPaneChip();
+        registerPane();
         syncUiForCompatibilityMode();
         hideDefaultStemButtons();
         hideStemsSettingsOptions();
@@ -1259,68 +1257,35 @@
         return true;
     }
 
-    // ── audio-mix faders ─────────────────────────────────────────────────────
-    // Publish each stem on the host's audio-mix capability. Two things fall out:
-    //
-    //   1. The stems appear in the host's own mixer, next to the song fader,
-    //      instead of only inside our panel.
-    //   2. A DETACHED pane can drive them. A popped-out pane runs in another JS
-    //      realm — no AudioContext, no <audio>, none of the graph below — so the
-    //      capability bus is the only way its sliders can reach setStemVolume().
-    //      This registration IS the bridge; without it a pane would be a row of
-    //      sliders wired to nothing.
-    //
-    // Values are 0..100 with a '%' unit to match the host's song fader, and are
-    // scaled to the 0..1 our state uses.
-    function registerAudioMixFaders() {
-        const api = window.feedBack && window.feedBack.audio;
-        if (!api || typeof api.registerFader !== 'function') return;
-        if (registeredFaders) return;
-        registeredFaders = true;
-
-        STEM_KEYS.forEach((stem) => {
-            api.registerFader({
-                id: `${PLUGIN_ID}:${stem}`,
-                label: STEM_LABELS[stem],
-                unit: '%',
-                min: 0,
-                max: 100,
-                step: 1,
-                defaultValue: 100,
-                getValue: () => Math.round((getCurrentState().levels[stem] ?? 1) * 100),
-                setValue: (v) => {
-                    setStemVolume(stem, (Number(v) || 0) / 100);
-                    // A write can arrive from the host mixer or from a detached
-                    // pane, neither of which touches our sliders — so re-sync the
-                    // UI here rather than waiting for the observer's next sweep.
-                    // applyStateToUi assigns input.value, which fires no 'input'
-                    // event, so this cannot loop back into setStemVolume.
-                    applyStateToUi(getCurrentState());
-                },
-            });
-        });
-    }
-
     // ── Detachable pane ──────────────────────────────────────────────────────
-    // The panel is a fixed overlay pinned over the player (z-index 220). It is
-    // exactly the kind of option-heavy dialog that is in the way when you want to
-    // see the highway, and gone when you want the faders. Hand it the host's
-    // standard pop-out chip and it becomes a window you can leave open — across
-    // song switches, on a second monitor, minimized to the tray.
+    // The panel is a fixed overlay pinned over the player (z-index 220): in the way
+    // when you want to see the highway, gone when you want the faders. Register it
+    // as a pane and it becomes a window you can leave open — across song switches,
+    // on a second monitor, minimized to the tray.
     //
-    // Core owns the chip, the hiding, and the "bring it back" stub. All we do is
-    // point at the element. Nothing here runs on an older host: no panes API, no
-    // chip, and the panel behaves exactly as before.
-    function attachPaneChip() {
+    // The host MOVES THIS ELEMENT into the pane window. Not a copy of it, not a
+    // reimplementation — this node, with its listeners and its closures intact. So
+    // the faders in the popped-out window are these faders, calling setStemVolume()
+    // exactly as they do now. Nothing about the mixer needs to know it moved.
+    //
+    // Core owns the chip, the hiding and the "bring it back" stub. Nothing here
+    // runs on an older host: no panes API, no chip, and the panel behaves as before.
+    function registerPane() {
         const panes = window.feedBack && window.feedBack.panes;
-        if (!panes || typeof panes.attachChip !== 'function') return;
-        if (chipAttached || !mixerPanel || !mixerPanel.isConnected) return;
-        // The pane itself is declared in plugin.json (`panes`), so the host has
-        // already registered it — and can open it from the rail or the tray even
-        // if the user never opens our panel. If that registration is missing,
-        // there is nothing to attach a chip to.
-        if (!panes.get(PLUGIN_ID)) return;
-        chipAttached = true;
+        if (!panes || typeof panes.register !== 'function') return;
+        if (paneRegistered || !mixerPanel || !mixerPanel.isConnected) return;
+        paneRegistered = true;
+
+        panes.register({
+            id: PLUGIN_ID,
+            title: 'Stem Mixer',
+            icon: '🎚',
+            // Resolved when the pane opens, not now: ensureMixerPanel() rebuilds the
+            // panel if it is ever detached, and the host must always get the live one.
+            element: () => mixerPanel,
+            width: 320,
+            height: 340,
+        });
         panes.attachChip(mixerPanel, PLUGIN_ID, { header: mixerPanelHeader || undefined });
     }
 
