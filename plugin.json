@@ -14,6 +14,17 @@
     "category": "audio"
   },
   "routes": "routes.py",
+  "panes": [
+    {
+      "id": "stem_mixer",
+      "title": "Stem Mixer",
+      "icon": "🎚",
+      "script": "pane.js",
+      "defaultHost": "window",
+      "width": 320,
+      "height": 320
+    }
+  ],
   "category": "audio",
   "description": "Per-stem volume mixing during playback.",
   "icon": "assets/thumb.svg"
