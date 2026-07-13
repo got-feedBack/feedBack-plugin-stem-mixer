@@ -45,6 +45,8 @@
     let mixerPanel = null;
     let mixerPanelHeader = null;
     let paneRegistered = false;
+    let chipPanel = null;      // the panel node the pop-out chip is currently on
+    let chipDetach = null;     // undo for that attachment
     let obs = null;
     let profileSelect = null;
     let pluginProfileSelect = null;
@@ -1298,22 +1300,38 @@
         // throw straight through this function and take the rest of the UI sweep
         // (fader sync, compat mode, the observer) with it.
         if (!panes || typeof panes.register !== 'function' || typeof panes.attachChip !== 'function') return;
-        if (paneRegistered || !mixerPanel || !mixerPanel.isConnected) return;
+        if (!mixerPanel || !mixerPanel.isConnected) return;
 
-        panes.register({
-            id: PLUGIN_ID,
-            title: 'Stem Mixer',
-            icon: '🎚',
-            // Resolved when the pane opens, not now: ensureMixerPanel() rebuilds the
-            // panel if it is ever detached, and the host must always get the live one.
-            element: () => mixerPanel,
-            width: 320,
-            height: 340,
-        });
-        // Only latch AFTER register() succeeds — it throws on a bad spec, and a flag
-        // set up front would latch on the failure and skip every later retry.
-        paneRegistered = true;
-        panes.attachChip(mixerPanel, PLUGIN_ID, { header: mixerPanelHeader || undefined });
+        // REGISTER ONCE. The spec resolves the element lazily, so it keeps working
+        // across rebuilds without re-registering.
+        if (!paneRegistered) {
+            panes.register({
+                id: PLUGIN_ID,
+                title: 'Stem Mixer',
+                icon: '🎚',
+                // Resolved when the pane opens, not now: ensureMixerPanel() rebuilds
+                // the panel if it is ever detached, and the host must always get the
+                // live one.
+                element: () => mixerPanel,
+                width: 320,
+                height: 340,
+            });
+            // Latch only AFTER register() succeeds — it throws on a bad spec, and a
+            // flag set up front would latch on the failure and skip every retry.
+            paneRegistered = true;
+        }
+
+        // RE-ATTACH THE CHIP PER PANEL. The registration survives a rebuild; the chip
+        // does not — it lives *inside* the panel, so ensureMixerPanel() building a
+        // fresh node leaves the chip on the old, discarded one. Guarding both behind
+        // a single "registered" flag would mean the pop-out button silently
+        // disappears the first time the panel is rebuilt, with the pane still
+        // registered and no way for the user to reach it.
+        if (chipPanel !== mixerPanel) {
+            if (chipDetach) { try { chipDetach(); } catch (e) { /* already gone */ } }
+            chipDetach = panes.attachChip(mixerPanel, PLUGIN_ID, { header: mixerPanelHeader || undefined });
+            chipPanel = mixerPanel;
+        }
     }
 
     function setupObservers() {
