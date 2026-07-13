@@ -1034,7 +1034,10 @@
         // popped out, the pane host neutralises its placement with .fb-paned and
         // forces it visible; when it docks back and that class is removed, an
         // inline display:none would reassert itself and the panel would return
-        // invisible. `hidden` composes cleanly instead. See docs/plugin-panes.md.
+        // invisible. `hidden` composes cleanly instead.
+        //
+        // (The pane contract lives in the host repo, got-feedback/feedBack:
+        // docs/plugin-panes.md — not in this one.)
         mixerPanel.hidden = true;
 
         // The title row doubles as the pane header: the host's pop-out chip is
@@ -1277,9 +1280,12 @@
     // runs on an older host: no panes API, no chip, and the panel behaves as before.
     function registerPane() {
         const panes = window.feedBack && window.feedBack.panes;
-        if (!panes || typeof panes.register !== 'function') return;
+        // Both calls are guarded, not just the first: an older or partial host could
+        // expose register() without attachChip(), and an unguarded call there would
+        // throw straight through this function and take the rest of the UI sweep
+        // (fader sync, compat mode, the observer) with it.
+        if (!panes || typeof panes.register !== 'function' || typeof panes.attachChip !== 'function') return;
         if (paneRegistered || !mixerPanel || !mixerPanel.isConnected) return;
-        paneRegistered = true;
 
         panes.register({
             id: PLUGIN_ID,
@@ -1291,6 +1297,9 @@
             width: 320,
             height: 340,
         });
+        // Only latch AFTER register() succeeds — it throws on a bad spec, and a flag
+        // set up front would latch on the failure and skip every later retry.
+        paneRegistered = true;
         panes.attachChip(mixerPanel, PLUGIN_ID, { header: mixerPanelHeader || undefined });
     }
 
