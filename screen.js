@@ -432,15 +432,36 @@
         stemBootstrapTimers = [];
     }
 
-    // True once the new song's stems are actually addressable — either as <audio>
-    // elements we can find, or through the stems plugin's own state.
+    // True once the new song's stems are actually addressable.
+    //
+    // This MUST cover every surface setStemVolumeViaStemsApi() can write through, or
+    // the poll below waits for stems it could already be driving, times out, and the
+    // levels are never applied — which is the exact bug that loop exists to fix. The
+    // writer supports four; this used to check two.
+    //
+    // Note what is deliberately NOT here: the mere presence of `stems.setVolume`.
+    // That is a capability, not state — it exists before the new song's stems do, so
+    // trusting it would declare victory immediately after a song change and push the
+    // levels into nothing.  We are waiting for the stems to EXIST, not for the API to.
     function stemsReachable() {
-        if (window.stems && typeof window.stems.getState === 'function') {
+        const stems = window.stems;
+        if (stems) {
             try {
-                const s = window.stems.getState();
-                if (s && Object.keys(s).length) return true;
-            } catch (e) { /* stems plugin mid-rebuild */ }
+                if (typeof stems.getState === 'function') {
+                    const s = stems.getState();
+                    // Array (newer) or keyed object (older) — both count when non-empty.
+                    if (Array.isArray(s) ? s.length > 0 : (s && Object.keys(s).length > 0)) return true;
+                }
+                // The alternate/older surface. setStemVolumeViaStemsApi writes to it,
+                // so a host that only has this one is perfectly drivable.
+                if (Array.isArray(stems.stemState) && stems.stemState.length > 0) return true;
+            } catch (e) { /* stems plugin mid-rebuild — try again next tick */ }
         }
+        // The graph bridge (AudioContext.prototype.createMediaElementSource snooping).
+        // If we caught the stems plugin wiring its nodes, we can drive those gains
+        // whether or not any <audio> element is discoverable.
+        if (Object.keys(stemsBridgeByStem).length > 0) return true;
+
         return Object.keys(getStemAudioMap()).length > 0;
     }
 
