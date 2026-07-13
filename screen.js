@@ -2,6 +2,24 @@
     'use strict';
 
     const PLUGIN_ID = 'stem_mixer';
+
+    // ── Idempotent re-injection ───────────────────────────────────────────────
+    //
+    // The host can run this script more than once (screen re-entry, a version change).
+    // Without a teardown, the second run builds a SECOND panel and a second observer
+    // while the first instance's panel stays on screen — and every module variable in
+    // the new instance points at the new, invisible one.
+    //
+    // The user then clicks the ✕ on the panel they can SEE, the handler runs
+    // perfectly, and it closes the OTHER panel. "The X doesn't work" was really
+    // "there are two panels and you're looking at the one nobody owns".
+    //
+    // Every stateful hook has the same problem: two MutationObservers, two sets of
+    // bootstrap timers, and a pane registration the host resolves to the dead
+    // instance's element (first registration wins).
+    if (window.__stemMixerInstance && typeof window.__stemMixerInstance.destroy === 'function') {
+        try { window.__stemMixerInstance.destroy(); } catch (e) { /* tear down what we can */ }
+    }
     const STEM_KEYS = ['guitar', 'bass', 'vocals', 'drums', 'piano', 'other'];
     const EQ_BANDS = [60, 170, 310, 600, 1000, 3000, 6000, 12000];
     const STEM_LABELS = {
@@ -1062,6 +1080,14 @@
     }
 
     function ensureMixerPanel() {
+        // A panel carrying our id that ISN'T ours is a zombie — from a previous
+        // instance, or a rebuild that left its predecessor behind. It still has a ✕
+        // and sliders wired to a closure that owns nothing, so leaving it on screen is
+        // worse than useless: the user clicks it and nothing happens.
+        document.querySelectorAll('#stem-mixer-panel').forEach((n) => {
+            if (n !== mixerPanel) { try { n.remove(); } catch (e) { /* ignore */ } }
+        });
+
         if (mixerPanel && mixerPanel.isConnected) return mixerPanel;
         profileSelect = null;
 
@@ -1489,6 +1515,40 @@
             return result;
         };
     }
+
+    // The handle a re-injection of this script uses to remove THIS instance.
+    // Everything that outlives a function call belongs in here.
+    window.__stemMixerInstance = {
+        destroy() {
+            try { if (obs) { obs.disconnect(); obs = null; } } catch (e) { /* ignore */ }
+            try { clearStemBootstrapTimers(); } catch (e) { /* ignore */ }
+            clearTimeout(uiUpdateTimer);
+            if (autolevelTimer) { clearInterval(autolevelTimer); autolevelTimer = null; }
+
+            // Hand the pane back BEFORE the element it points at disappears. The host
+            // resolves `element: () => mixerPanel` lazily, so a registration left
+            // behind would hand it a node belonging to a dead instance.
+            try { if (chipDetach) chipDetach(); } catch (e) { /* ignore */ }
+            chipDetach = null;
+            chipPanel = null;
+            const panes = window.feedBack && window.feedBack.panes;
+            if (panes && typeof panes.unregister === 'function') {
+                try { panes.unregister(PLUGIN_ID); } catch (e) { /* ignore */ }
+            }
+
+            if (mixerButton) { try { mixerButton.remove(); } catch (e) { /* ignore */ } }
+            // Remove EVERY panel with our id, not just our own reference: if an earlier
+            // run already leaked one, this is where it finally goes.
+            document.querySelectorAll('#stem-mixer-panel').forEach((n) => {
+                try { n.remove(); } catch (e) { /* ignore */ }
+            });
+
+            mixerPanel = null;
+            mixerButton = null;
+            mixerPanelHeader = null;
+            paneRegistered = false;
+        },
+    };
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
