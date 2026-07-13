@@ -642,11 +642,27 @@
         applyStateToUi(state);
     }
 
+    // Look up an element that lives INSIDE the floating panel.
+    //
+    // Not document.getElementById(): the panel is a detachable pane, so the host may
+    // have moved it into a pop-out window's document. Our code still runs here, in
+    // the main window, where `document` is the MAIN document — and the panel is no
+    // longer in it. Every id lookup would quietly return null, and every update it
+    // guards would silently stop happening, exactly while the user is looking at the
+    // panel.
+    //
+    // Searching from the panel itself works in either document. Elements that live in
+    // the PLUGIN SCREEN (the `stem-mixer-plugin-*` ids) never move, so they keep
+    // using document.getElementById.
+    function panelEl(id) {
+        return mixerPanel ? mixerPanel.querySelector('#' + id) : null;
+    }
+
     function syncUiForCompatibilityMode() {
         const inCompatMode = isStemsPluginActive();
-        const eqSection = document.getElementById('stem-mixer-eq-section');
-        const eqWrap = document.getElementById('stem-mixer-eq-wrap');
-        const eqActions = document.getElementById('stem-mixer-eq-actions');
+        const eqSection = panelEl('stem-mixer-eq-section');
+        const eqWrap = panelEl('stem-mixer-eq-wrap');
+        const eqActions = panelEl('stem-mixer-eq-actions');
         if (eqSection) {
             eqSection.style.display = inCompatMode ? 'none' : '';
         }
@@ -656,7 +672,7 @@
         if (eqActions) {
             eqActions.style.display = inCompatMode ? 'none' : '';
         }
-        const hint = document.getElementById('stem-mixer-hint');
+        const hint = panelEl('stem-mixer-hint');
         if (hint) {
             hint.textContent = inCompatMode
                 ? 'Compatibility mode: stems plugin detected. Stem Mixer controls per-stem volume only to avoid audio conflicts.'
