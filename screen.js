@@ -461,9 +461,13 @@
         let landed = false;
 
         const tick = () => {
-            const state = getCurrentState();
-            const reachable = stemsReachable();
-            if (reachable) {
+            // Do NOT read the state here. getCurrentState() is a localStorage read
+            // plus a JSON.parse plus a sanitize pass, and this polls every 200ms for
+            // up to 12s — sixty synchronous storage reads during a song load, to
+            // produce a value that is only used once the stems are reachable. Read it
+            // in the branch that actually needs it.
+            if (stemsReachable()) {
+                const state = getCurrentState();
                 // Force the write (skipSave, and past the appliedLevels
                 // idempotence guard) — the audio is new, so whatever that guard
                 // thinks was already applied was applied to the PREVIOUS song's
