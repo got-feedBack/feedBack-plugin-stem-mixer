@@ -1100,8 +1100,42 @@
         title.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;letter-spacing:0.02em;color:#eaf0ff;margin-bottom:12px;';
         const titleText = document.createElement('span');
         titleText.textContent = 'Stem Mixer';
+        // Push the buttons to the right edge, whatever ends up in the row.
+        titleText.style.cssText = 'flex:1 1 auto;';
         title.appendChild(titleText);
+
+        // A close button, in the panel itself.
+        //
+        // The panel used to be closed only by clicking the "Stem Mixer" button in the
+        // player controls again — which was liveable when the panel was an anonymous
+        // overlay, and is not now that it has a titled header with a pop-out chip in
+        // it. It reads as a window, so it needs the thing a window has. Hunting for
+        // the button that opened it is not an affordance.
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '✕';
+        closeBtn.title = 'Close';
+        closeBtn.setAttribute('aria-label', 'Close stem mixer');
+        closeBtn.style.cssText = 'flex:0 0 auto;width:22px;height:22px;display:inline-flex;align-items:center;'
+            + 'justify-content:center;border:0;border-radius:6px;background:transparent;color:#8b95aa;'
+            + 'font-size:12px;line-height:1;cursor:pointer;order:2;';   // order:2 → the chip sits to its left
+        closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#1e293b'; closeBtn.style.color = '#eaf0ff'; });
+        closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#8b95aa'; });
+        closeBtn.addEventListener('click', () => {
+            // If the panel is popped out, this element is inside the pane window.
+            // Just hiding it would leave the user staring at an empty window, so bring
+            // it home first — then close it, which is what they asked for.
+            const panes = window.feedBack && window.feedBack.panes;
+            if (panes && typeof panes.isOpen === 'function' && panes.isOpen(PLUGIN_ID)) {
+                panes.close(PLUGIN_ID);
+            }
+            closeMixer();
+        });
+        title.appendChild(closeBtn);
+
         mixerPanel.appendChild(title);
+        // The chip attaches HERE, so it lands left of the ✕ — the same order the pane
+        // dock and every other panel put them in.
         mixerPanelHeader = title;
 
         const state = getCurrentState();
