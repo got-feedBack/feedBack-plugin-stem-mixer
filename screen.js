@@ -471,9 +471,18 @@
                 appliedLevels = Object.create(null);
                 STEM_KEYS.forEach((stem) => setStemVolume(stem, state.levels[stem], true));
                 if (landed) return;          // second successful push — settled, stop.
-                landed = true;               // …once more next tick, in case the
-                                             // graph was still wiring up under us.
+
+                // Schedule the confirmation pass and return WITHOUT touching the
+                // deadline. MAX_WAIT_MS bounds how long we wait for stems to appear,
+                // not what we do once they have: stems that turn up near the cutoff
+                // would otherwise get their first push and then be abandoned by the
+                // very next line — the one case where the levels are most likely to
+                // still be settling.
+                landed = true;
+                stemBootstrapTimers.push(setTimeout(tick, INTERVAL_MS));
+                return;
             }
+
             waited += INTERVAL_MS;
             if (waited >= MAX_WAIT_MS) return;   // no stems in this song; give up quietly
             stemBootstrapTimers.push(setTimeout(tick, INTERVAL_MS));
