@@ -1079,6 +1079,14 @@
         saveProfiles(profiles);
     }
 
+    // True when the pane system currently owns our panel — i.e. it has been moved
+    // into a pop-out window (or is mid-move). The element is alive and well; it is
+    // just not in this document, so `isConnected` lies about it.
+    function paneOwnsPanel() {
+        const panes = window.feedBack && window.feedBack.panes;
+        return !!(panes && typeof panes.isOpen === 'function' && panes.isOpen(PLUGIN_ID));
+    }
+
     function ensureMixerPanel() {
         // A panel carrying our id that ISN'T ours is a zombie — from a previous
         // instance, or a rebuild that left its predecessor behind. It still has a ✕
@@ -1088,7 +1096,23 @@
             if (n !== mixerPanel) { try { n.remove(); } catch (e) { /* ignore */ } }
         });
 
-        if (mixerPanel && mixerPanel.isConnected) return mixerPanel;
+        // NEVER REBUILD THE PANEL WHILE THE PANE OWNS IT.
+        //
+        // `isConnected` is not a safe test once this panel can be a pane. The host
+        // takes the element out of this document to move it into a pop-out window —
+        // and detaches it the moment the pop-out starts, before the new window has
+        // even loaded. In that gap `mixerPanel.isConnected` is false.
+        //
+        // If a UI sweep lands there, this function used to conclude its panel was
+        // gone and build a SECOND one. The host then still holds the original, and
+        // docking brings it home alongside the impostor: two panels, the visible one
+        // owned by nobody, and a ✕ that closes the other. That is precisely the "the
+        // X doesn't work" bug, and it reproduced exactly on pop-out → dock.
+        //
+        // The pane system knows the truth, so ask it: if the pane is open, the
+        // element is fine — it is simply somewhere else.
+        if (mixerPanel && (mixerPanel.isConnected || paneOwnsPanel())) return mixerPanel;
+
         profileSelect = null;
 
         mixerPanel = document.createElement('div');
@@ -1371,7 +1395,10 @@
     // player-DOM churn instead of closest() walks + a queued update pass.
     function uiAlreadyMounted() {
         if (!mixerButton || !mixerButton.isConnected) return false;
-        if (!mixerPanel || !mixerPanel.isConnected) return false;
+        // Same trap as ensureMixerPanel: a popped-out panel is not in this document,
+        // and isConnected would call that "unmounted" — driving a full sweep on every
+        // player-DOM mutation for as long as the pane is open.
+        if (!mixerPanel || !(mixerPanel.isConnected || paneOwnsPanel())) return false;
         const rowsHost = document.getElementById('stem-mixer-plugin-eq-rows');
         if (rowsHost && rowsHost.dataset.stemMixerBuilt !== '1') return false;
         return true;
