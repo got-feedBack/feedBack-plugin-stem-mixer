@@ -259,8 +259,12 @@
             const canonical = canonicalStemId(entry.id);
             if (!canonical || canonical === 'full' || canonical === '__proto__') return;
             const meta = {};
-            if (typeof entry.name === 'string' && entry.name.trim()) meta.name = entry.name;
-            if (typeof entry.description === 'string' && entry.description.trim()) meta.description = entry.description;
+            // Stored trimmed: whitespace-only is already rejected, so padding
+            // must not survive into the label / tooltip either.
+            const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+            const description = typeof entry.description === 'string' ? entry.description.trim() : '';
+            if (name) meta.name = name;
+            if (description) meta.description = description;
             if (Object.keys(meta).length && !(canonical in out)) out[canonical] = meta;
         });
         return out;
@@ -949,8 +953,11 @@
 
         const label = document.createElement('span');
         label.textContent = stemDisplayName(stem, stemMeta);
-        // Manifest names can outgrow the 58px column — clip, don't wrap the row.
-        label.style.cssText = 'font-size:11px;color:#b5bfd5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        // Manifest names can outgrow the 58px column — clip, don't wrap the
+        // row. flex/min-width let the span actually shrink inside the flex
+        // container; without them the ellipsis never engages and long names
+        // overflow the column.
+        label.style.cssText = 'font-size:11px;color:#b5bfd5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;';
         name.appendChild(label);
 
         if (meta && meta.description) {

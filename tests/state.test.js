@@ -210,6 +210,8 @@ test('extractStemMeta keeps name/description from object rows, keyed canonically
         null,
     ]);
     assert.deepEqual(meta.guitar, { name: 'Rhythm Guitar' });
+    // Padded values are stored trimmed, not raw.
+    assert.deepEqual(extractStemMeta([{ id: 'bass', name: '  Bass VI  ' }]).bass, { name: 'Bass VI' });
     assert.deepEqual(meta.click, { name: 'Click', description: 'Metronome click with 4-count lead-in.' });
     assert.deepEqual(meta.vocals, { name: 'Lead Vox' });
     assert.equal('full' in meta, false);
