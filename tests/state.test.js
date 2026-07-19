@@ -162,6 +162,11 @@ test('sanitizeState resists prototype pollution and inherited-name collisions', 
     assert.equal(s.levels.tostring, 0.3);
 });
 
+test('sanitizeState ignores an array levels payload instead of copying its indices', () => {
+    const { sanitizeState, DEFAULT_STATE } = freshPlugin();
+    assert.deepEqual(sanitizeState({ levels: [0.5, 0.7] }), DEFAULT_STATE);
+});
+
 test('normalizeAvailableStems canonicalizes, dedupes, drops full/blank, handles objects', () => {
     const { normalizeAvailableStems } = freshPlugin();
     assert.deepEqual(

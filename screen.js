@@ -130,7 +130,9 @@
         // Songs can carry stems beyond the six known ids ("strings", "synth", …).
         // Their levels live in the same map; keep them or every reload silently
         // resets those stems to full volume.
-        Object.keys((rawState.levels && typeof rawState.levels === 'object') ? rawState.levels : {}).forEach((key) => {
+        const rawLevels = (rawState.levels && typeof rawState.levels === 'object' && !Array.isArray(rawState.levels))
+            ? rawState.levels : {};
+        Object.keys(rawLevels).forEach((key) => {
             const canonical = canonicalStemId(key);
             // Own-key check, not `in`: next.levels is a plain object, so `in`
             // would see inherited names ('constructor', …) and wrongly skip a
@@ -138,7 +140,7 @@
             // assignment can't shadow — drop it outright.
             if (!canonical || canonical === 'full' || canonical === '__proto__' ||
                 Object.prototype.hasOwnProperty.call(next.levels, canonical)) return;
-            const n = Number(rawState.levels[key]);
+            const n = Number(rawLevels[key]);
             if (Number.isFinite(n)) next.levels[canonical] = Math.max(0, Math.min(1, n));
         });
 
@@ -339,7 +341,7 @@
             // the stem outright, whatever the id — including ones outside STEM_KEYS.
             // The token heuristics below stay as a fallback for the six known ids.
             const exact = canonicalStemId(dataStem) || stemIdFromUrl(srcDecoded) || stemIdFromUrl(src);
-            if (exact && exact !== 'full' && !map[exact]) map[exact] = audio;
+            if (exact && exact !== 'full' && exact !== '__proto__' && !map[exact]) map[exact] = audio;
 
             STEM_KEYS.forEach((stem) => {
                 const stemAlias = stem === 'vocals' ? ['voice', 'vocals', 'vocal'] : [stem];
