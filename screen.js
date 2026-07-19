@@ -96,6 +96,11 @@
     let appliedLevels = Object.create(null);
     let lastUiUpdateAt = 0;
     const tokenReCache = Object.create(null);
+    // The current song's stem ids. Three-valued: null = not known yet (render the
+    // default six, exactly the pre-availability behavior), [] = known to have no
+    // stems (render the "no stems" message), non-empty = render exactly these.
+    let availableStems = null;
+    let onStemsStateEvent = null;
 
     function invalidateAudioCaches() {
         stemAudioMapCache = null;
@@ -120,6 +125,16 @@
         STEM_KEYS.forEach((stem) => {
             const n = Number(rawState.levels && rawState.levels[stem]);
             next.levels[stem] = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 1;
+        });
+
+        // Songs can carry stems beyond the six known ids ("strings", "synth", …).
+        // Their levels live in the same map; keep them or every reload silently
+        // resets those stems to full volume.
+        Object.keys((rawState.levels && typeof rawState.levels === 'object') ? rawState.levels : {}).forEach((key) => {
+            const canonical = canonicalStemId(key);
+            if (!canonical || canonical === 'full' || canonical in next.levels) return;
+            const n = Number(rawState.levels[key]);
+            if (Number.isFinite(n)) next.levels[canonical] = Math.max(0, Math.min(1, n));
         });
 
         EQ_BANDS.forEach((_, idx) => {
@@ -204,6 +219,31 @@
         return STEM_ALIASES[String(stemId || '').toLowerCase()] || String(stemId || '').toLowerCase();
     }
 
+    // Canonical, deduped stem ids from whatever shape the source hands us —
+    // string arrays (stems:state stemIds), object arrays (stems.getState() rows).
+    // The reserved "full" mixdown is not a mixable stem and is dropped.
+    function normalizeAvailableStems(ids) {
+        const out = [];
+        (Array.isArray(ids) ? ids : []).forEach((entry) => {
+            const raw = (entry && typeof entry === 'object') ? entry.id : entry;
+            const canonical = canonicalStemId(raw);
+            if (canonical && canonical !== 'full' && !out.includes(canonical)) out.push(canonical);
+        });
+        return out;
+    }
+
+    function setAvailableStems(ids) {
+        const next = ids == null ? null : normalizeAvailableStems(ids);
+        if (JSON.stringify(next) === JSON.stringify(availableStems)) return;
+        availableStems = next;
+        queueUiUpdate();
+    }
+
+    // What the slider surfaces should show right now.
+    function displayStems() {
+        return Array.isArray(availableStems) ? availableStems : STEM_KEYS;
+    }
+
     function safeDecodeUrl(url) {
         const src = String(url || '');
         if (!src) return '';
@@ -286,6 +326,12 @@
             const srcDecoded = safeDecodeUrl(src).toLowerCase();
             const dataStem = String((audio.dataset && audio.dataset.stem) || '').toLowerCase();
             const joined = `${id} ${cls} ${src} ${srcDecoded} ${dataStem}`;
+
+            // Exact-id detection first: data-stem or a /stems/<id>.<ext> path names
+            // the stem outright, whatever the id — including ones outside STEM_KEYS.
+            // The token heuristics below stay as a fallback for the six known ids.
+            const exact = canonicalStemId(dataStem) || stemIdFromUrl(srcDecoded) || stemIdFromUrl(src);
+            if (exact && exact !== 'full' && !map[exact]) map[exact] = audio;
 
             STEM_KEYS.forEach((stem) => {
                 const stemAlias = stem === 'vocals' ? ['voice', 'vocals', 'vocal'] : [stem];
@@ -395,7 +441,7 @@
         if (!ctx || !filterChain.length) return;
         const map = getStemAudioMap();
 
-        STEM_KEYS.forEach((stem) => {
+        Object.keys(map).forEach((stem) => {
             const audio = map[stem];
             if (!audio) return;
 
@@ -508,13 +554,31 @@
             // produce a value that is only used once the stems are reachable. Read it
             // in the branch that actually needs it.
             if (stemsReachable()) {
+                // Record what this song actually has. getState() is authoritative
+                // when non-empty; the bridge/audio-map keys are heuristic-derived,
+                // so they only fill in when nothing better has reported yet.
+                let reported = null;
+                if (window.stems && typeof window.stems.getState === 'function') {
+                    try { reported = window.stems.getState(); } catch (e) { reported = null; }
+                }
+                if (Array.isArray(reported) && reported.length > 0) {
+                    setAvailableStems(reported);
+                } else if (availableStems === null) {
+                    const bridged = Object.keys(stemsBridgeByStem);
+                    const mapped = bridged.length ? bridged : Object.keys(getStemAudioMap());
+                    if (mapped.length) setAvailableStems(mapped);
+                }
+
                 const state = getCurrentState();
                 // Force the write (skipSave, and past the appliedLevels
                 // idempotence guard) — the audio is new, so whatever that guard
                 // thinks was already applied was applied to the PREVIOUS song's
                 // nodes.
                 appliedLevels = Object.create(null);
-                STEM_KEYS.forEach((stem) => setStemVolume(stem, state.levels[stem], true));
+                displayStems().forEach((stem) => {
+                    const level = state.levels[stem] !== undefined ? state.levels[stem] : 1;
+                    setStemVolume(stem, level, true);
+                });
                 if (landed) return;          // second successful push — settled, stop.
 
                 // Schedule the confirmation pass and return WITHOUT touching the
@@ -529,7 +593,15 @@
             }
 
             waited += INTERVAL_MS;
-            if (waited >= MAX_WAIT_MS) return;   // no stems in this song; give up quietly
+            if (waited >= MAX_WAIT_MS) {
+                // No stems ever became reachable. If nothing (e.g. a stems:state
+                // event) established the list either, this is our only signal that
+                // the song is stem-less — flip unknown to known-empty so the UI
+                // shows the message instead of six dead sliders. Never overwrite
+                // an event-established list.
+                if (availableStems === null) setAvailableStems([]);
+                return;
+            }
             stemBootstrapTimers.push(setTimeout(tick, INTERVAL_MS));
         };
 
@@ -632,17 +704,16 @@
     }
 
     function applyStateToUi(state) {
-        STEM_KEYS.forEach((stem) => {
-            if (stemInputs[stem]) {
-                const val = Math.round((state.levels[stem] || 0) * 100);
-                stemInputs[stem].value = String(val);
-                if (stemInputs[stem]._pctTag) stemInputs[stem]._pctTag.textContent = `${val}%`;
-            }
-            if (pluginStemInputs[stem]) {
-                const val = Math.round((state.levels[stem] || 0) * 100);
-                pluginStemInputs[stem].value = String(val);
-                if (pluginStemInputs[stem]._pctTag) pluginStemInputs[stem]._pctTag.textContent = `${val}%`;
-            }
+        // Iterate the inputs that exist, not STEM_KEYS — the rendered sliders are
+        // per-song and can include ids outside the six known ones.
+        [stemInputs, pluginStemInputs].forEach((registry) => {
+            Object.keys(registry).forEach((stem) => {
+                if (!registry[stem]) return;
+                const level = state.levels[stem] !== undefined ? state.levels[stem] : 1;
+                const val = Math.round(level * 100);
+                registry[stem].value = String(val);
+                if (registry[stem]._pctTag) registry[stem]._pctTag.textContent = `${val}%`;
+            });
         });
 
         EQ_BANDS.forEach((_, idx) => {
@@ -667,14 +738,15 @@
         const state = getCurrentState();
         if (!isStemsPluginActive()) ensureAudioContext();
         ensureStemNodes();
-        STEM_KEYS.forEach((stem) => {
+        displayStems().forEach((stem) => {
+            const level = state.levels[stem] !== undefined ? state.levels[stem] : 1;
             // Idempotence: skip stems whose level was already pushed. Without
             // this, every UI-update pass re-wrote button classes/aria in the
             // stems plugin (via stems.setVolume), whose DOM mutations re-armed
             // our own MutationObserver — a self-sustaining ~12 Hz loop.
             // appliedLevels is cleared on song load, so new songs re-push.
-            if (appliedLevels[stem] === state.levels[stem]) return;
-            setStemVolume(stem, state.levels[stem], true);
+            if (appliedLevels[stem] === level) return;
+            setStemVolume(stem, level, true);
         });
         applyEqToGraph(state.eq);
         setAutolevelEnabled(state.autolevel, true);
@@ -801,12 +873,12 @@
         });
     }
 
-    function makeSliderRow(stem, current) {
+    function makeSliderRow(stem, current, registry) {
         const row = document.createElement('label');
         row.style.cssText = 'display:grid;grid-template-columns:58px 1fr 42px;gap:10px;align-items:center;';
 
         const name = document.createElement('span');
-        name.textContent = STEM_LABELS[stem];
+        name.textContent = STEM_LABELS[stem] || (stem.charAt(0).toUpperCase() + stem.slice(1));
         name.style.cssText = 'font-size:11px;color:#b5bfd5;';
 
         const input = document.createElement('input');
@@ -826,12 +898,46 @@
             setStemVolume(stem, level);
         });
         input._pctTag = pct;
-        stemInputs[stem] = input;
+        (registry || stemInputs)[stem] = input;
 
         row.appendChild(name);
         row.appendChild(input);
         row.appendChild(pct);
         return row;
+    }
+
+    // (Re)build one slider host from the current song's stem list. Cheap to call
+    // from every UI sweep: the rendered list is stashed on the host and an
+    // unchanged list is a single string compare, no DOM work.
+    function renderStemRowsInto(host, registry) {
+        const list = displayStems();
+        const key = JSON.stringify(list);
+        if (host.dataset.stemMixerRows === key) return;
+        host.dataset.stemMixerRows = key;
+
+        Object.keys(registry).forEach((k) => { delete registry[k]; });
+        host.innerHTML = '';
+
+        if (list.length === 0) {
+            const msg = document.createElement('div');
+            msg.textContent = 'No stems available for this song.';
+            msg.style.cssText = 'font-size:11px;line-height:1.35;color:#8b95aa;padding:6px 0;';
+            host.appendChild(msg);
+            return;
+        }
+
+        const state = getCurrentState();
+        list.forEach((stem) => {
+            const current = state.levels[stem] !== undefined ? Number(state.levels[stem]) : 1;
+            host.appendChild(makeSliderRow(stem, current, registry));
+        });
+    }
+
+    function renderStemRows() {
+        const panelHost = panelEl('stem-mixer-rows');
+        if (panelHost) renderStemRowsInto(panelHost, stemInputs);
+        const pluginHost = document.getElementById('stem-mixer-plugin-stem-rows');
+        if (pluginHost) renderStemRowsInto(pluginHost, pluginStemInputs);
     }
 
     function makeEqBand(idx, freq, current) {
@@ -866,40 +972,9 @@
         if (!rowsHost || !stemRowsHost) return;
         const state = getCurrentState();
 
+        // Stem slider rows are per-song and rendered by renderStemRows() from the
+        // UI sweep — only the one-shot EQ/controls build lives behind this gate.
         if (rowsHost.dataset.stemMixerBuilt !== '1') {
-            STEM_KEYS.forEach((stem) => {
-                const row = document.createElement('label');
-                row.style.cssText = 'display:grid;grid-template-columns:58px 1fr 42px;gap:10px;align-items:center;';
-
-                const name = document.createElement('span');
-                name.textContent = STEM_LABELS[stem];
-                name.style.cssText = 'font-size:11px;color:#b5bfd5;';
-
-                const input = document.createElement('input');
-                input.type = 'range';
-                input.min = '0';
-                input.max = '100';
-                input.step = '1';
-                input.value = String(Math.round((state.levels[stem] || 0) * 100));
-                input.style.cssText = 'width:100%;accent-color:#6ea8ff;';
-                input.addEventListener('input', () => {
-                    const level = parseInt(input.value, 10) / 100;
-                    value.textContent = `${input.value}%`;
-                    setStemVolume(stem, level);
-                });
-                pluginStemInputs[stem] = input;
-
-                const value = document.createElement('span');
-                value.textContent = `${input.value}%`;
-                value.style.cssText = 'font-size:10px;color:#8b95aa;text-align:right;';
-                input._valueTag = value;
-
-                row.appendChild(name);
-                row.appendChild(input);
-                row.appendChild(value);
-                stemRowsHost.appendChild(row);
-            });
-
             EQ_BANDS.forEach((freq, idx) => {
                 const band = document.createElement('div');
                 band.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;min-width:28px;';
@@ -1190,10 +1265,11 @@
 
         const state = getCurrentState();
 
-        STEM_KEYS.forEach((stem) => {
-            const current = state.levels[stem] !== undefined ? Number(state.levels[stem]) : 1;
-            mixerPanel.appendChild(makeSliderRow(stem, current));
-        });
+        // Slider rows are per-song; renderStemRows() (re)fills this container.
+        const rowsWrap = document.createElement('div');
+        rowsWrap.id = 'stem-mixer-rows';
+        rowsWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+        mixerPanel.appendChild(rowsWrap);
 
         if (SHOW_EQ_UI) {
             const eqTitle = document.createElement('div');
@@ -1243,6 +1319,9 @@
         mixerPanel.appendChild(hint);
 
         document.body.appendChild(mixerPanel);
+        // Fill the rows now: the panel is built lazily on first click, which can
+        // land between UI sweeps.
+        renderStemRows();
         syncUiForCompatibilityMode();
         applyStateToUi(state);
         setAutolevelEnabled(state.autolevel, true);
@@ -1310,6 +1389,7 @@
         // in particular must wait for the panel to exist before it has anything
         // to attach to.
         registerPane();
+        renderStemRows();
         syncUiForCompatibilityMode();
         hideDefaultStemButtons();
         hideStemsSettingsOptions();
@@ -1489,13 +1569,31 @@
             STEM_KEYS, EQ_BANDS, DEFAULT_STATE, STEM_ALIASES,
             sanitizeState, cloneState, canonicalStemId, safeDecodeUrl, stemIdFromUrl,
             loadState, saveState, loadProfiles, saveProfiles,
+            normalizeAvailableStems,
         };
         return;
     }
 
+    // The stems plugin announces each song's stem list the moment it knows it
+    // (plugins/stems/src/main.js, emitStemsState): stem-less songs get
+    // { event: 'provider-ready', stemCount: 0 }, stemmed songs get stemIds.
+    // This is the authoritative, instant availability source; the bootstrap
+    // poll below stays as the fallback for hosts without the stems plugin.
+    onStemsStateEvent = (e) => {
+        const d = e && e.detail;
+        if (!d || d.event !== 'provider-ready') return;
+        if (Array.isArray(d.stemIds)) setAvailableStems(d.stemIds);
+        else if (Number(d.stemCount) === 0) setAvailableStems([]);
+    };
+    window.addEventListener('stems:state', onStemsStateEvent);
+
     const originalPlaySong = window.playSong;
     if (typeof originalPlaySong === 'function') {
         window.playSong = async function (...args) {
+            // Reset BEFORE the await: the stems plugin can announce the new
+            // song's stems (provider-ready) while playSong is still in flight,
+            // and resetting afterwards would erase that fresh answer.
+            availableStems = null;
             const result = await originalPlaySong.apply(this, args);
             // New song: audio elements and stems-plugin gain nodes are
             // recreated, so every cached mapping and pushed level is stale.
@@ -1548,6 +1646,10 @@
     window.__stemMixerInstance = {
         destroy() {
             try { if (obs) { obs.disconnect(); obs = null; } } catch (e) { /* ignore */ }
+            if (onStemsStateEvent) {
+                try { window.removeEventListener('stems:state', onStemsStateEvent); } catch (e) { /* ignore */ }
+                onStemsStateEvent = null;
+            }
             try { clearStemBootstrapTimers(); } catch (e) { /* ignore */ }
             clearTimeout(uiUpdateTimer);
             if (autolevelTimer) { clearInterval(autolevelTimer); autolevelTimer = null; }

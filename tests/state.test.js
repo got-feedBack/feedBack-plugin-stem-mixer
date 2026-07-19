@@ -122,6 +122,46 @@ test('loadProfiles sanitizes each entry and drops blank-named ones', () => {
     assert.equal(profiles.Rock.levels.guitar, 1);
 });
 
+test('sanitizeState preserves dynamic (non-STEM_KEYS) levels, canonicalized and clamped', () => {
+    const { sanitizeState } = freshPlugin();
+    const s = sanitizeState({ levels: { strings: 0.5, Synth: 7, kazoo: -1, full: 0.2, bad: 'x' } });
+    assert.equal(s.levels.strings, 0.5);
+    assert.equal(s.levels.synth, 1);   // clamped high
+    assert.equal(s.levels.kazoo, 0);   // clamped low
+    assert.equal('full' in s.levels, false);  // reserved mixdown id dropped
+    assert.equal('bad' in s.levels, false);   // non-finite dropped
+    // The six known keys keep their defaults.
+    assert.equal(s.levels.guitar, 1);
+});
+
+test('sanitizeState folds aliased dynamic keys into the canonical known key', () => {
+    const { sanitizeState } = freshPlugin();
+    // "voice" canonicalizes to "vocals", which the STEM_KEYS pass already set —
+    // the alias must not create a duplicate key or overwrite it.
+    const s = sanitizeState({ levels: { vocals: 0.4, voice: 0.9 } });
+    assert.equal(s.levels.vocals, 0.4);
+    assert.equal('voice' in s.levels, false);
+});
+
+test('dynamic levels round-trip through localStorage', () => {
+    const { loadState, saveState } = freshPlugin();
+    saveState({ levels: { guitar: 0.3, strings: 0.6 } });
+    const reloaded = loadState();
+    assert.equal(reloaded.levels.guitar, 0.3);
+    assert.equal(reloaded.levels.strings, 0.6);
+});
+
+test('normalizeAvailableStems canonicalizes, dedupes, drops full/blank, handles objects', () => {
+    const { normalizeAvailableStems } = freshPlugin();
+    assert.deepEqual(
+        normalizeAvailableStems(['Voice', 'drums', 'vocal', 'full', '', null, 'strings']),
+        ['vocals', 'drums', 'strings']
+    );
+    assert.deepEqual(normalizeAvailableStems([{ id: 'Guitar' }, { id: 'bass' }, { id: 'guitar' }]), ['guitar', 'bass']);
+    assert.deepEqual(normalizeAvailableStems('nope'), []);
+    assert.deepEqual(normalizeAvailableStems([]), []);
+});
+
 test('loadProfiles tolerates corrupt storage and non-object payloads', () => {
     const { loadProfiles } = freshPlugin();
     global.localStorage.setItem('stem_mixer:profiles', '{not json');

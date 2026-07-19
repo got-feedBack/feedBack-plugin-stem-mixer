@@ -6,13 +6,10 @@
 
 ## Features
 
-- Per-stem volume controls for:
-  - Guitar
-  - Bass
-  - Voice
-  - Drums
-  - Piano
-  - Other
+- Per-stem volume controls, matching the stems the current song actually has
+  (Guitar, Bass, Voice, Drums, Piano, Other — plus any other stem id found in
+  the song, e.g. Strings or Synth). Songs without stems show a "No stems
+  available" notice instead of dead sliders.
 - 8-band graphic EQ.
 - EQ profiles with dropdown selection.
 - `Output autolevel` toggle to keep output loudness more consistent.
