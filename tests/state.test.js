@@ -162,6 +162,25 @@ test('sanitizeState resists prototype pollution and inherited-name collisions', 
     assert.equal(s.levels.tostring, 0.3);
 });
 
+test('sanitizeState folds an alias-only payload into the canonical known key', () => {
+    const { sanitizeState } = freshPlugin();
+    // Legacy/externally-written state: only the alias, no canonical key.
+    const s = sanitizeState({ levels: { voice: 0.9 } });
+    assert.equal(s.levels.vocals, 0.9);
+    assert.equal('voice' in s.levels, false);
+});
+
+test('levelFor uses own keys only and defaults inherited/missing/invalid to 1', () => {
+    const { levelFor } = freshPlugin();
+    assert.equal(levelFor({ guitar: 0.3 }, 'guitar'), 0.3);
+    assert.equal(levelFor({ guitar: 5 }, 'guitar'), 1);      // clamped
+    assert.equal(levelFor({ guitar: -2 }, 'guitar'), 0);     // clamped
+    assert.equal(levelFor({}, 'strings'), 1);                // missing
+    assert.equal(levelFor({}, 'constructor'), 1);            // inherited name, no own key
+    assert.equal(levelFor({ constructor: 0.4 }, 'constructor'), 0.4);
+    assert.equal(levelFor(null, 'guitar'), 1);
+});
+
 test('sanitizeState ignores an array levels payload instead of copying its indices', () => {
     const { sanitizeState, DEFAULT_STATE } = freshPlugin();
     assert.deepEqual(sanitizeState({ levels: [0.5, 0.7] }), DEFAULT_STATE);

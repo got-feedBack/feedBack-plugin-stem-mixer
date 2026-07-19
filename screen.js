@@ -134,12 +134,15 @@
             ? rawState.levels : {};
         Object.keys(rawLevels).forEach((key) => {
             const canonical = canonicalStemId(key);
-            // Own-key check, not `in`: next.levels is a plain object, so `in`
-            // would see inherited names ('constructor', …) and wrongly skip a
-            // stem that happens to use one. '__proto__' is the one key plain
-            // assignment can't shadow — drop it outright.
+            // Dedup against the RAW payload, not next.levels — next.levels
+            // already owns all six STEM_KEYS (defaulted) before this loop, so
+            // checking it would block an alias-only value (e.g. only "voice",
+            // no "vocals") from ever reaching its canonical stem. Own-key
+            // check, not `in`: inherited names ('constructor', …) are legal
+            // stem ids. '__proto__' is the one key plain assignment can't
+            // shadow — drop it outright.
             if (!canonical || canonical === 'full' || canonical === '__proto__' ||
-                Object.prototype.hasOwnProperty.call(next.levels, canonical)) return;
+                (canonical !== key && Object.prototype.hasOwnProperty.call(rawLevels, canonical))) return;
             const n = Number(rawLevels[key]);
             if (Number.isFinite(n)) next.levels[canonical] = Math.max(0, Math.min(1, n));
         });
@@ -252,6 +255,17 @@
     // What the slider surfaces should show right now.
     function displayStems() {
         return Array.isArray(availableStems) ? availableStems : STEM_KEYS;
+    }
+
+    // Stored level for a stem, defaulting to full volume. Own-key lookup: a
+    // dynamic id like 'constructor' would otherwise resolve to a value
+    // inherited from Object.prototype and poison the gain math with NaN.
+    function levelFor(levels, stem) {
+        if (levels && Object.prototype.hasOwnProperty.call(levels, stem)) {
+            const n = Number(levels[stem]);
+            if (Number.isFinite(n)) return Math.max(0, Math.min(1, n));
+        }
+        return 1;
     }
 
     function safeDecodeUrl(url) {
@@ -586,7 +600,7 @@
                 // nodes.
                 appliedLevels = Object.create(null);
                 displayStems().forEach((stem) => {
-                    const level = state.levels[stem] !== undefined ? state.levels[stem] : 1;
+                    const level = levelFor(state.levels, stem);
                     setStemVolume(stem, level, true);
                 });
                 if (landed) return;          // second successful push — settled, stop.
@@ -719,7 +733,7 @@
         [stemInputs, pluginStemInputs].forEach((registry) => {
             Object.keys(registry).forEach((stem) => {
                 if (!registry[stem]) return;
-                const level = state.levels[stem] !== undefined ? state.levels[stem] : 1;
+                const level = levelFor(state.levels, stem);
                 const val = Math.round(level * 100);
                 registry[stem].value = String(val);
                 if (registry[stem]._pctTag) registry[stem]._pctTag.textContent = `${val}%`;
@@ -749,7 +763,7 @@
         if (!isStemsPluginActive()) ensureAudioContext();
         ensureStemNodes();
         displayStems().forEach((stem) => {
-            const level = state.levels[stem] !== undefined ? state.levels[stem] : 1;
+            const level = levelFor(state.levels, stem);
             // Idempotence: skip stems whose level was already pushed. Without
             // this, every UI-update pass re-wrote button classes/aria in the
             // stems plugin (via stems.setVolume), whose DOM mutations re-armed
@@ -942,7 +956,7 @@
 
         const state = getCurrentState();
         list.forEach((stem) => {
-            const current = state.levels[stem] !== undefined ? Number(state.levels[stem]) : 1;
+            const current = levelFor(state.levels, stem);
             host.appendChild(makeSliderRow(stem, current, registry));
         });
     }
@@ -1583,7 +1597,7 @@
             STEM_KEYS, EQ_BANDS, DEFAULT_STATE, STEM_ALIASES,
             sanitizeState, cloneState, canonicalStemId, safeDecodeUrl, stemIdFromUrl,
             loadState, saveState, loadProfiles, saveProfiles,
-            normalizeAvailableStems,
+            normalizeAvailableStems, levelFor,
         };
         return;
     }
