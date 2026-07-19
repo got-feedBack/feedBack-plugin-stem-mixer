@@ -197,6 +197,46 @@ test('normalizeAvailableStems canonicalizes, dedupes, drops full/blank, handles 
     assert.deepEqual(normalizeAvailableStems([]), []);
 });
 
+test('extractStemMeta keeps name/description from object rows, keyed canonically', () => {
+    const { extractStemMeta } = freshPlugin();
+    const meta = extractStemMeta([
+        { id: 'Guitar', name: 'Rhythm Guitar' },
+        { id: 'click', name: 'Click', description: 'Metronome click with 4-count lead-in.' },
+        { id: 'Voice', name: 'Lead Vox' },          // alias -> vocals
+        { id: 'full', name: 'Full Mix' },           // reserved mixdown dropped
+        { id: 'bass' },                             // no metadata -> no entry
+        { id: 'drums', name: '   ', description: 7 }, // blank / non-string dropped
+        'strings',                                  // plain id string -> no entry
+        null,
+    ]);
+    assert.deepEqual(meta.guitar, { name: 'Rhythm Guitar' });
+    assert.deepEqual(meta.click, { name: 'Click', description: 'Metronome click with 4-count lead-in.' });
+    assert.deepEqual(meta.vocals, { name: 'Lead Vox' });
+    assert.equal('full' in meta, false);
+    assert.equal('bass' in meta, false);
+    assert.equal('drums' in meta, false);
+    assert.equal('strings' in meta, false);
+});
+
+test('extractStemMeta yields an empty map for plain string arrays and junk', () => {
+    const { extractStemMeta } = freshPlugin();
+    assert.deepEqual(Object.keys(extractStemMeta(['guitar', 'bass'])), []);
+    assert.deepEqual(Object.keys(extractStemMeta('nope')), []);
+    assert.deepEqual(Object.keys(extractStemMeta(null)), []);
+});
+
+test('stemDisplayName prefers manifest name, then built-in label, then capitalized id', () => {
+    const { stemDisplayName, STEM_LABELS } = freshPlugin();
+    const meta = { guitar: { name: 'Rhythm Guitar' }, click: { description: 'no name here' } };
+    assert.equal(stemDisplayName('guitar', meta), 'Rhythm Guitar');
+    assert.equal(stemDisplayName('vocals', meta), STEM_LABELS.vocals); // built-in label ("Voice")
+    assert.equal(stemDisplayName('click', meta), 'Click');             // description alone doesn't rename
+    assert.equal(stemDisplayName('kazoo', meta), 'Kazoo');             // unknown id capitalized
+    assert.equal(stemDisplayName('kazoo', null), 'Kazoo');
+    // Inherited names must not leak off Object.prototype.
+    assert.equal(stemDisplayName('constructor', {}), 'Constructor');
+});
+
 test('loadProfiles tolerates corrupt storage and non-object payloads', () => {
     const { loadProfiles } = freshPlugin();
     global.localStorage.setItem('stem_mixer:profiles', '{not json');
