@@ -132,7 +132,12 @@
         // resets those stems to full volume.
         Object.keys((rawState.levels && typeof rawState.levels === 'object') ? rawState.levels : {}).forEach((key) => {
             const canonical = canonicalStemId(key);
-            if (!canonical || canonical === 'full' || canonical in next.levels) return;
+            // Own-key check, not `in`: next.levels is a plain object, so `in`
+            // would see inherited names ('constructor', …) and wrongly skip a
+            // stem that happens to use one. '__proto__' is the one key plain
+            // assignment can't shadow — drop it outright.
+            if (!canonical || canonical === 'full' || canonical === '__proto__' ||
+                Object.prototype.hasOwnProperty.call(next.levels, canonical)) return;
             const n = Number(rawState.levels[key]);
             if (Number.isFinite(n)) next.levels[canonical] = Math.max(0, Math.min(1, n));
         });
@@ -216,7 +221,10 @@
     }
 
     function canonicalStemId(stemId) {
-        return STEM_ALIASES[String(stemId || '').toLowerCase()] || String(stemId || '').toLowerCase();
+        const lower = String(stemId || '').toLowerCase();
+        // Own-key lookup: ids like 'constructor' would otherwise resolve to
+        // values inherited from Object.prototype.
+        return Object.prototype.hasOwnProperty.call(STEM_ALIASES, lower) ? STEM_ALIASES[lower] : lower;
     }
 
     // Canonical, deduped stem ids from whatever shape the source hands us —
@@ -227,7 +235,7 @@
         (Array.isArray(ids) ? ids : []).forEach((entry) => {
             const raw = (entry && typeof entry === 'object') ? entry.id : entry;
             const canonical = canonicalStemId(raw);
-            if (canonical && canonical !== 'full' && !out.includes(canonical)) out.push(canonical);
+            if (canonical && canonical !== 'full' && canonical !== '__proto__' && !out.includes(canonical)) out.push(canonical);
         });
         return out;
     }
@@ -878,7 +886,11 @@
         row.style.cssText = 'display:grid;grid-template-columns:58px 1fr 42px;gap:10px;align-items:center;';
 
         const name = document.createElement('span');
-        name.textContent = STEM_LABELS[stem] || (stem.charAt(0).toUpperCase() + stem.slice(1));
+        // Own-key lookup: a dynamic id like 'constructor' would otherwise pull
+        // an inherited value off the labels object.
+        name.textContent = Object.prototype.hasOwnProperty.call(STEM_LABELS, stem)
+            ? STEM_LABELS[stem]
+            : (stem.charAt(0).toUpperCase() + stem.slice(1));
         name.style.cssText = 'font-size:11px;color:#b5bfd5;';
 
         const input = document.createElement('input');
@@ -1592,7 +1604,11 @@
         window.playSong = async function (...args) {
             // Reset BEFORE the await: the stems plugin can announce the new
             // song's stems (provider-ready) while playSong is still in flight,
-            // and resetting afterwards would erase that fresh answer.
+            // and resetting afterwards would erase that fresh answer. Kill the
+            // previous song's bootstrap timers with it — a leftover tick firing
+            // during the await would report the OLD song's stems (or its 12s
+            // timeout would flip the new song to "no stems").
+            clearStemBootstrapTimers();
             availableStems = null;
             const result = await originalPlaySong.apply(this, args);
             // New song: audio elements and stems-plugin gain nodes are

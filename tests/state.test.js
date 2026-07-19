@@ -151,6 +151,17 @@ test('dynamic levels round-trip through localStorage', () => {
     assert.equal(reloaded.levels.strings, 0.6);
 });
 
+test('sanitizeState resists prototype pollution and inherited-name collisions', () => {
+    const { sanitizeState } = freshPlugin();
+    const s = sanitizeState(JSON.parse('{"levels": {"__proto__": 0.1, "constructor": 0.2, "toString": 0.3}}'));
+    assert.equal(Object.prototype.hasOwnProperty.call(s.levels, '__proto__'), false);
+    assert.equal(({}).polluted, undefined);
+    // Inherited names are legal stem ids — kept as OWN keys (canonicalized to
+    // lowercase), not skipped via `in` or resolved through the prototype.
+    assert.equal(s.levels.constructor, 0.2);
+    assert.equal(s.levels.tostring, 0.3);
+});
+
 test('normalizeAvailableStems canonicalizes, dedupes, drops full/blank, handles objects', () => {
     const { normalizeAvailableStems } = freshPlugin();
     assert.deepEqual(
