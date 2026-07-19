@@ -122,6 +122,81 @@ test('loadProfiles sanitizes each entry and drops blank-named ones', () => {
     assert.equal(profiles.Rock.levels.guitar, 1);
 });
 
+test('sanitizeState preserves dynamic (non-STEM_KEYS) levels, canonicalized and clamped', () => {
+    const { sanitizeState } = freshPlugin();
+    const s = sanitizeState({ levels: { strings: 0.5, Synth: 7, kazoo: -1, full: 0.2, bad: 'x' } });
+    assert.equal(s.levels.strings, 0.5);
+    assert.equal(s.levels.synth, 1);   // clamped high
+    assert.equal(s.levels.kazoo, 0);   // clamped low
+    assert.equal('full' in s.levels, false);  // reserved mixdown id dropped
+    assert.equal('bad' in s.levels, false);   // non-finite dropped
+    // The six known keys keep their defaults.
+    assert.equal(s.levels.guitar, 1);
+});
+
+test('sanitizeState folds aliased dynamic keys into the canonical known key', () => {
+    const { sanitizeState } = freshPlugin();
+    // "voice" canonicalizes to "vocals", which the STEM_KEYS pass already set —
+    // the alias must not create a duplicate key or overwrite it.
+    const s = sanitizeState({ levels: { vocals: 0.4, voice: 0.9 } });
+    assert.equal(s.levels.vocals, 0.4);
+    assert.equal('voice' in s.levels, false);
+});
+
+test('dynamic levels round-trip through localStorage', () => {
+    const { loadState, saveState } = freshPlugin();
+    saveState({ levels: { guitar: 0.3, strings: 0.6 } });
+    const reloaded = loadState();
+    assert.equal(reloaded.levels.guitar, 0.3);
+    assert.equal(reloaded.levels.strings, 0.6);
+});
+
+test('sanitizeState resists prototype pollution and inherited-name collisions', () => {
+    const { sanitizeState } = freshPlugin();
+    const s = sanitizeState(JSON.parse('{"levels": {"__proto__": 0.1, "constructor": 0.2, "toString": 0.3}}'));
+    assert.equal(Object.prototype.hasOwnProperty.call(s.levels, '__proto__'), false);
+    assert.equal(({}).polluted, undefined);
+    // Inherited names are legal stem ids — kept as OWN keys (canonicalized to
+    // lowercase), not skipped via `in` or resolved through the prototype.
+    assert.equal(s.levels.constructor, 0.2);
+    assert.equal(s.levels.tostring, 0.3);
+});
+
+test('sanitizeState folds an alias-only payload into the canonical known key', () => {
+    const { sanitizeState } = freshPlugin();
+    // Legacy/externally-written state: only the alias, no canonical key.
+    const s = sanitizeState({ levels: { voice: 0.9 } });
+    assert.equal(s.levels.vocals, 0.9);
+    assert.equal('voice' in s.levels, false);
+});
+
+test('levelFor uses own keys only and defaults inherited/missing/invalid to 1', () => {
+    const { levelFor } = freshPlugin();
+    assert.equal(levelFor({ guitar: 0.3 }, 'guitar'), 0.3);
+    assert.equal(levelFor({ guitar: 5 }, 'guitar'), 1);      // clamped
+    assert.equal(levelFor({ guitar: -2 }, 'guitar'), 0);     // clamped
+    assert.equal(levelFor({}, 'strings'), 1);                // missing
+    assert.equal(levelFor({}, 'constructor'), 1);            // inherited name, no own key
+    assert.equal(levelFor({ constructor: 0.4 }, 'constructor'), 0.4);
+    assert.equal(levelFor(null, 'guitar'), 1);
+});
+
+test('sanitizeState ignores an array levels payload instead of copying its indices', () => {
+    const { sanitizeState, DEFAULT_STATE } = freshPlugin();
+    assert.deepEqual(sanitizeState({ levels: [0.5, 0.7] }), DEFAULT_STATE);
+});
+
+test('normalizeAvailableStems canonicalizes, dedupes, drops full/blank, handles objects', () => {
+    const { normalizeAvailableStems } = freshPlugin();
+    assert.deepEqual(
+        normalizeAvailableStems(['Voice', 'drums', 'vocal', 'full', '', null, 'strings']),
+        ['vocals', 'drums', 'strings']
+    );
+    assert.deepEqual(normalizeAvailableStems([{ id: 'Guitar' }, { id: 'bass' }, { id: 'guitar' }]), ['guitar', 'bass']);
+    assert.deepEqual(normalizeAvailableStems('nope'), []);
+    assert.deepEqual(normalizeAvailableStems([]), []);
+});
+
 test('loadProfiles tolerates corrupt storage and non-object payloads', () => {
     const { loadProfiles } = freshPlugin();
     global.localStorage.setItem('stem_mixer:profiles', '{not json');
