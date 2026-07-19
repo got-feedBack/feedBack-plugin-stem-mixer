@@ -227,6 +227,25 @@ test('extractStemMeta yields an empty map for plain string arrays and junk', () 
     assert.deepEqual(Object.keys(extractStemMeta(null)), []);
 });
 
+test('extractStemMeta reads id/name/description as own keys only', () => {
+    const { extractStemMeta } = freshPlugin();
+    // Values riding in off the prototype must not become metadata.
+    const inherited = Object.create({ id: 'guitar', name: 'Evil', description: 'nope' });
+    assert.deepEqual(Object.keys(extractStemMeta([inherited])), []);
+    const ownId = Object.create({ name: 'Evil' });
+    ownId.id = 'bass';
+    assert.deepEqual(Object.keys(extractStemMeta([ownId])), []);
+});
+
+test('sameStemSet ignores order, catches membership changes', () => {
+    const { sameStemSet } = freshPlugin();
+    assert.equal(sameStemSet(['guitar', 'drums'], ['drums', 'guitar']), true);
+    assert.equal(sameStemSet(['guitar', 'drums'], ['guitar', 'bass']), false);
+    assert.equal(sameStemSet(['guitar'], ['guitar', 'drums']), false);
+    assert.equal(sameStemSet(null, ['guitar']), false);
+    assert.equal(sameStemSet(['guitar'], null), false);
+});
+
 test('stemDisplayName prefers manifest name, then built-in label, then capitalized id', () => {
     const { stemDisplayName, STEM_LABELS } = freshPlugin();
     const meta = { guitar: { name: 'Rhythm Guitar' }, click: { description: 'no name here' } };

@@ -251,23 +251,37 @@
     }
 
     // Display metadata from object rows, keyed by canonical id. Only own,
-    // non-blank strings survive; plain string arrays yield an empty map.
+    // non-blank strings survive — own-key reads throughout, so values riding
+    // in off a crafted prototype are never treated as metadata; plain string
+    // arrays yield an empty map.
     function extractStemMeta(ids) {
+        const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
         const out = Object.create(null);
         (Array.isArray(ids) ? ids : []).forEach((entry) => {
             if (!entry || typeof entry !== 'object') return;
-            const canonical = canonicalStemId(entry.id);
+            const canonical = canonicalStemId(own(entry, 'id') ? entry.id : '');
             if (!canonical || canonical === 'full' || canonical === '__proto__') return;
             const meta = {};
             // Stored trimmed: whitespace-only is already rejected, so padding
             // must not survive into the label / tooltip either.
-            const name = typeof entry.name === 'string' ? entry.name.trim() : '';
-            const description = typeof entry.description === 'string' ? entry.description.trim() : '';
+            const rawName = own(entry, 'name') ? entry.name : undefined;
+            const rawDescription = own(entry, 'description') ? entry.description : undefined;
+            const name = typeof rawName === 'string' ? rawName.trim() : '';
+            const description = typeof rawDescription === 'string' ? rawDescription.trim() : '';
             if (name) meta.name = name;
             if (description) meta.description = description;
             if (Object.keys(meta).length && !(canonical in out)) out[canonical] = meta;
         });
         return out;
+    }
+
+    // Same membership regardless of order. Reorder-only reports must not count
+    // as a "new list" for metadata purposes: a plain-id source replaying the
+    // same stems in a different order carries no metadata, and treating the
+    // reorder as a list change would let it wipe what a richer source provided.
+    function sameStemSet(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+        return a.every(id => b.includes(id));
     }
 
     function setAvailableStems(ids) {
@@ -276,9 +290,11 @@
         const listChanged = JSON.stringify(next) !== JSON.stringify(availableStems);
         // A metadata-less report (plain id strings from an older stems plugin,
         // bridge/audio-map derived keys) must never wipe metadata a richer
-        // report already provided for the same list — only a list change or a
-        // report that actually carries metadata may replace it.
-        const metaChanged = (listChanged || Object.keys(nextMeta).length > 0)
+        // report already provided for the same stems — only a membership
+        // change (not a reorder of the same set) or a report that actually
+        // carries metadata may replace it.
+        const membershipChanged = listChanged && !sameStemSet(next, availableStems);
+        const metaChanged = (membershipChanged || Object.keys(nextMeta).length > 0)
             && JSON.stringify(nextMeta) !== JSON.stringify(stemMeta);
         if (!listChanged && !metaChanged) return;
         if (listChanged) availableStems = next;
@@ -1661,7 +1677,7 @@
             sanitizeState, cloneState, canonicalStemId, safeDecodeUrl, stemIdFromUrl,
             loadState, saveState, loadProfiles, saveProfiles,
             normalizeAvailableStems, levelFor,
-            extractStemMeta, stemDisplayName, STEM_LABELS,
+            extractStemMeta, stemDisplayName, sameStemSet, STEM_LABELS,
         };
         return;
     }
