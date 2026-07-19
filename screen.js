@@ -100,6 +100,11 @@
     // default six, exactly the pre-availability behavior), [] = known to have no
     // stems (render the "no stems" message), non-empty = render exactly these.
     let availableStems = null;
+    // Per-stem display metadata keyed by canonical id: the manifest's optional
+    // `name`/`description` (feedpak §5.3), when a source that carries them
+    // (stems:state `stems` rows, getState() rows) has reported. Presentation
+    // only — levels, aliases and persistence all stay keyed by id.
+    let stemMeta = Object.create(null);
     let onStemsStateEvent = null;
 
     function invalidateAudioCaches() {
@@ -245,10 +250,55 @@
         return out;
     }
 
+    // Display metadata from object rows, keyed by canonical id. Only own,
+    // non-blank strings survive — own-key reads throughout, so values riding
+    // in off a crafted prototype are never treated as metadata; plain string
+    // arrays yield an empty map.
+    function extractStemMeta(ids) {
+        const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+        const out = Object.create(null);
+        (Array.isArray(ids) ? ids : []).forEach((entry) => {
+            if (!entry || typeof entry !== 'object') return;
+            const canonical = canonicalStemId(own(entry, 'id') ? entry.id : '');
+            if (!canonical || canonical === 'full' || canonical === '__proto__') return;
+            const meta = {};
+            // Stored trimmed: whitespace-only is already rejected, so padding
+            // must not survive into the label / tooltip either.
+            const rawName = own(entry, 'name') ? entry.name : undefined;
+            const rawDescription = own(entry, 'description') ? entry.description : undefined;
+            const name = typeof rawName === 'string' ? rawName.trim() : '';
+            const description = typeof rawDescription === 'string' ? rawDescription.trim() : '';
+            if (name) meta.name = name;
+            if (description) meta.description = description;
+            if (Object.keys(meta).length && !(canonical in out)) out[canonical] = meta;
+        });
+        return out;
+    }
+
+    // Same membership regardless of order. Reorder-only reports must not count
+    // as a "new list" for metadata purposes: a plain-id source replaying the
+    // same stems in a different order carries no metadata, and treating the
+    // reorder as a list change would let it wipe what a richer source provided.
+    function sameStemSet(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+        return a.every(id => b.includes(id));
+    }
+
     function setAvailableStems(ids) {
         const next = ids == null ? null : normalizeAvailableStems(ids);
-        if (JSON.stringify(next) === JSON.stringify(availableStems)) return;
-        availableStems = next;
+        const nextMeta = extractStemMeta(ids);
+        const listChanged = JSON.stringify(next) !== JSON.stringify(availableStems);
+        // A metadata-less report (plain id strings from an older stems plugin,
+        // bridge/audio-map derived keys) must never wipe metadata a richer
+        // report already provided for the same stems — only a membership
+        // change (not a reorder of the same set) or a report that actually
+        // carries metadata may replace it.
+        const membershipChanged = listChanged && !sameStemSet(next, availableStems);
+        const metaChanged = (membershipChanged || Object.keys(nextMeta).length > 0)
+            && JSON.stringify(nextMeta) !== JSON.stringify(stemMeta);
+        if (!listChanged && !metaChanged) return;
+        if (listChanged) availableStems = next;
+        if (metaChanged) stemMeta = nextMeta;
         queueUiUpdate();
     }
 
@@ -897,17 +947,44 @@
         });
     }
 
+    // What to print for a stem: the manifest's `name` when a metadata-bearing
+    // source reported one, else the built-in label, else the capitalized id.
+    // Own-key lookups throughout: a dynamic id like 'constructor' would
+    // otherwise pull inherited values off the label/meta objects.
+    function stemDisplayName(stem, meta) {
+        const m = (meta && Object.prototype.hasOwnProperty.call(meta, stem)) ? meta[stem] : null;
+        if (m && typeof m.name === 'string' && m.name) return m.name;
+        return Object.prototype.hasOwnProperty.call(STEM_LABELS, stem)
+            ? STEM_LABELS[stem]
+            : (stem.charAt(0).toUpperCase() + stem.slice(1));
+    }
+
     function makeSliderRow(stem, current, registry) {
         const row = document.createElement('label');
         row.style.cssText = 'display:grid;grid-template-columns:58px 1fr 42px;gap:10px;align-items:center;';
 
+        const meta = Object.prototype.hasOwnProperty.call(stemMeta, stem) ? stemMeta[stem] : null;
         const name = document.createElement('span');
-        // Own-key lookup: a dynamic id like 'constructor' would otherwise pull
-        // an inherited value off the labels object.
-        name.textContent = Object.prototype.hasOwnProperty.call(STEM_LABELS, stem)
-            ? STEM_LABELS[stem]
-            : (stem.charAt(0).toUpperCase() + stem.slice(1));
-        name.style.cssText = 'font-size:11px;color:#b5bfd5;';
+        name.style.cssText = 'display:flex;align-items:center;min-width:0;';
+
+        const label = document.createElement('span');
+        label.textContent = stemDisplayName(stem, stemMeta);
+        // Manifest names can outgrow the 58px column — clip, don't wrap the
+        // row. flex/min-width let the span actually shrink inside the flex
+        // container; without them the ellipsis never engages and long names
+        // overflow the column.
+        label.style.cssText = 'font-size:11px;color:#b5bfd5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;';
+        name.appendChild(label);
+
+        if (meta && meta.description) {
+            const info = document.createElement('span');
+            info.textContent = 'ⓘ';
+            info.title = meta.description;
+            info.setAttribute('role', 'img');
+            info.setAttribute('aria-label', meta.description);
+            info.style.cssText = 'margin-left:4px;flex:none;font-size:10px;color:#8b95aa;cursor:help;';
+            name.appendChild(info);
+        }
 
         const input = document.createElement('input');
         input.type = 'range';
@@ -939,7 +1016,9 @@
     // unchanged list is a single string compare, no DOM work.
     function renderStemRowsInto(host, registry) {
         const list = displayStems();
-        const key = JSON.stringify(list);
+        // Metadata is part of the render key: a name/description arriving for
+        // an unchanged id list must still rebuild the rows.
+        const key = JSON.stringify([list, list.map(s => (Object.prototype.hasOwnProperty.call(stemMeta, s) ? stemMeta[s] : null))]);
         if (host.dataset.stemMixerRows === key) return;
         host.dataset.stemMixerRows = key;
 
@@ -1598,6 +1677,7 @@
             sanitizeState, cloneState, canonicalStemId, safeDecodeUrl, stemIdFromUrl,
             loadState, saveState, loadProfiles, saveProfiles,
             normalizeAvailableStems, levelFor,
+            extractStemMeta, stemDisplayName, sameStemSet, STEM_LABELS,
         };
         return;
     }
@@ -1610,7 +1690,10 @@
     onStemsStateEvent = (e) => {
         const d = e && e.detail;
         if (!d || d.event !== 'provider-ready') return;
-        if (Array.isArray(d.stemIds)) setAvailableStems(d.stemIds);
+        // `stems` rows carry the manifest's optional name/description
+        // (feedpak §5.3) alongside ids; `stemIds` is the older plain-id shape.
+        if (Array.isArray(d.stems) && d.stems.length) setAvailableStems(d.stems);
+        else if (Array.isArray(d.stemIds)) setAvailableStems(d.stemIds);
         else if (Number(d.stemCount) === 0) setAvailableStems([]);
     };
     window.addEventListener('stems:state', onStemsStateEvent);
@@ -1626,6 +1709,7 @@
             // timeout would flip the new song to "no stems").
             clearStemBootstrapTimers();
             availableStems = null;
+            stemMeta = Object.create(null);
             const result = await originalPlaySong.apply(this, args);
             // New song: audio elements and stems-plugin gain nodes are
             // recreated, so every cached mapping and pushed level is stale.
