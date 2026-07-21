@@ -185,11 +185,13 @@
     }
 
     function saveState(state) {
-        // A direct save supersedes the drag write-behind: every caller builds
-        // `state` from getCurrentState(), which already folds staged values
-        // in. Finish the staged stems-API application and drop the staging —
-        // otherwise a later flush would overwrite this newer write with
-        // older data.
+        // A direct save supersedes the drag write-behind. Callers either
+        // build `state` from getCurrentState() (staged values folded in) or
+        // pass a deliberate wholesale replacement (applyProfile) — in both
+        // cases this write is the newer truth, so drop the staging: a later
+        // flush must not overwrite it with older data. The staged stems-API
+        // application still runs — those levels were audible, and the stems
+        // plugin's own per-song persistence isn't covered by our store.
         if (pendingFlushTimer) { clearTimeout(pendingFlushTimer); pendingFlushTimer = null; }
         pendingState = null;
         applyPendingDragLevels();
@@ -200,8 +202,9 @@
             // Storage failed (private mode, quota, etc). Keep this state as
             // the in-memory truth: getCurrentState() readers must not fall
             // back to the stale stored copy, or a UI sweep would snap live
-            // values back for the rest of the session. The next save retries
-            // naturally — callers build from getCurrentState().
+            // values back for the rest of the session. Any later save either
+            // carries this forward (getCurrentState-based callers) or
+            // replaces it on purpose — both retry the write.
             pendingState = sanitized;
         }
     }
