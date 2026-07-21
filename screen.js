@@ -106,6 +106,15 @@
     // only — levels, aliases and persistence all stay keyed by id.
     let stemMeta = Object.create(null);
     let onStemsStateEvent = null;
+    // Write-behind persistence for slider drags. localStorage is synchronous
+    // main-thread work, and the old per-`input`-tick save chain (our state
+    // write + the stems plugin's saveVolume/saveMuted + owner-status
+    // snapshots) starved the highway's requestAnimationFrame loop and
+    // stuttered playback. Drags stage their state here and flush once,
+    // shortly after the last tick.
+    let pendingState = null;
+    let pendingDragLevels = Object.create(null);
+    let pendingFlushTimer = null;
 
     function invalidateAudioCaches() {
         stemAudioMapCache = null;
@@ -176,11 +185,47 @@
     }
 
     function saveState(state) {
+        // A direct save supersedes the drag write-behind: every caller builds
+        // `state` from getCurrentState(), which already folds staged values
+        // in. Finish the staged stems-API application and drop the staging —
+        // otherwise a later flush would overwrite this newer write with
+        // older data.
+        if (pendingFlushTimer) { clearTimeout(pendingFlushTimer); pendingFlushTimer = null; }
+        pendingState = null;
+        applyPendingDragLevels();
         try {
             localStorage.setItem(STATE_KEY, JSON.stringify(sanitizeState(state)));
         } catch (_) {
             // Ignore storage errors (private mode, quota, etc).
         }
+    }
+
+    // Apply staged drag levels through the FULL stems API — the per-song
+    // persistence, button-UI updates and owner-status snapshot that
+    // previewStemVolume() deliberately skips on every `input` tick.
+    function applyPendingDragLevels() {
+        const staged = pendingDragLevels;
+        pendingDragLevels = Object.create(null);
+        Object.keys(staged).forEach((stem) => {
+            setStemVolumeViaStemsApi(stem, staged[stem]);
+        });
+    }
+
+    function flushPending() {
+        if (pendingFlushTimer) { clearTimeout(pendingFlushTimer); pendingFlushTimer = null; }
+        applyPendingDragLevels();
+        if (!pendingState) return;
+        const state = pendingState;
+        pendingState = null;
+        saveState(state);
+    }
+
+    function schedulePendingFlush() {
+        // Trailing debounce: one flush shortly after the last slider tick.
+        // 250 ms is long enough that a continuous drag never flushes mid-drag
+        // and short enough that the final value lands effectively instantly.
+        if (pendingFlushTimer) clearTimeout(pendingFlushTimer);
+        pendingFlushTimer = setTimeout(flushPending, 250);
     }
 
     function loadProfiles() {
@@ -209,6 +254,11 @@
     }
 
     function getCurrentState() {
+        // While a drag's write-behind save is pending, the staged state — not
+        // localStorage — is the truth. Every reader (applyStoredState's
+        // re-push, profile capture, autolevel) must see it, or a mid-drag UI
+        // sweep would read the stale stored level and snap the volume back.
+        if (pendingState) return sanitizeState(pendingState);
         return sanitizeState(loadState());
     }
 
@@ -559,10 +609,63 @@
         appliedLevels[canonical] = clamped;
 
         if (!skipSave) {
-            const state = getCurrentState();
-            state.levels[canonical] = clamped;
-            saveState(state);
+            if (!pendingState) pendingState = getCurrentState();
+            pendingState.levels[canonical] = clamped;
+            schedulePendingFlush();
         }
+    }
+
+    // Per-tick path for slider drags. `input` fires at pointer-move rate, so
+    // this does only the work that must track the pointer: the audible gain
+    // and the staged state. Everything heavy — our localStorage write, the
+    // stems plugin's saveVolume/saveMuted/button updates/owner-status
+    // snapshots — waits for flushPending(). Deliberately does NOT write
+    // item.vol: the flush's stems.setVolume() only persists when it sees the
+    // value change from the one it last saved.
+    function previewStemVolume(stem, level) {
+        const clamped = Math.max(0, Math.min(1, Number(level) || 0));
+        const canonical = canonicalStemId(stem);
+        if (!window.stems) {
+            const map = getStemAudioMap();
+            if (map[canonical]) {
+                map[canonical].volume = clamped;
+                map[canonical].muted = false;
+            }
+            ensureStemNodes();
+            if (stemNodes[canonical]) {
+                stemNodes[canonical].gain.value = clamped;
+            }
+        } else {
+            // stemState is the live internal array (no allocation, unlike
+            // getState()); the API docs bless writing gain.gain.value
+            // directly as the caller-side fast path.
+            const list = Array.isArray(window.stems.stemState)
+                ? window.stems.stemState
+                : (typeof window.stems.getState === 'function' ? window.stems.getState() : null);
+            if (Array.isArray(list)) {
+                list.forEach((item) => {
+                    if (canonicalStemId(item && item.id) !== canonical) return;
+                    if (item.gain && item.gain.gain) item.gain.gain.value = clamped;
+                    if ('on' in item) item.on = true;
+                    if (item.audio) item.audio.muted = false;
+                });
+            }
+        }
+
+        const bridged = stemsBridgeByStem[canonical];
+        if (bridged) {
+            if (bridged.gain && bridged.gain.gain) bridged.gain.gain.value = clamped;
+            if (bridged.audio) {
+                bridged.audio.muted = false;
+                bridged.audio.volume = 1;
+            }
+        }
+
+        appliedLevels[canonical] = clamped;
+        if (!pendingState) pendingState = getCurrentState();
+        pendingState.levels[canonical] = clamped;
+        pendingDragLevels[canonical] = clamped;
+        schedulePendingFlush();
     }
 
     function clearStemBootstrapTimers() {
@@ -695,7 +798,6 @@
         const clamped = Math.max(-12, Math.min(12, Number(value) || 0));
         const state = getCurrentState();
         state.eq[index] = clamped;
-        saveState(state);
         ensureAudioContext();
         applyEqToGraph(state.eq);
 
@@ -709,6 +811,12 @@
         }
 
         if (skipSave) return;
+        // Write-behind, same as the volume path — EQ `input` fires just as
+        // fast as the stem sliders. (The save used to run unconditionally
+        // above this guard, so skipSave never actually skipped it.)
+        if (!pendingState) pendingState = state;
+        pendingState.eq[index] = clamped;
+        schedulePendingFlush();
     }
 
     function updateAutolevelButtonState(enabled) {
@@ -1000,7 +1108,7 @@
         input.addEventListener('input', () => {
             const level = parseInt(input.value, 10) / 100;
             pct.textContent = `${input.value}%`;
-            setStemVolume(stem, level);
+            previewStemVolume(stem, level);
         });
         input._pctTag = pct;
         (registry || stemInputs)[stem] = input;
@@ -1697,6 +1805,9 @@
         else if (Number(d.stemCount) === 0) setAvailableStems([]);
     };
     window.addEventListener('stems:state', onStemsStateEvent);
+    // A drag's write-behind save is only ~250 ms behind, but a close/refresh
+    // inside that window must not lose the final slider value.
+    window.addEventListener('pagehide', flushPending);
 
     const originalPlaySong = window.playSong;
     if (typeof originalPlaySong === 'function') {
@@ -1767,6 +1878,10 @@
                 onStemsStateEvent = null;
             }
             try { clearStemBootstrapTimers(); } catch (e) { /* ignore */ }
+            // Land any staged drag state before this instance dies — the
+            // replacement instance reads localStorage on boot.
+            try { flushPending(); } catch (e) { /* ignore */ }
+            try { window.removeEventListener('pagehide', flushPending); } catch (e) { /* ignore */ }
             clearTimeout(uiUpdateTimer);
             if (autolevelTimer) { clearInterval(autolevelTimer); autolevelTimer = null; }
 
