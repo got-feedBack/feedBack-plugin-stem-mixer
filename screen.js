@@ -196,7 +196,12 @@
         try {
             localStorage.setItem(STATE_KEY, JSON.stringify(sanitizeState(state)));
         } catch (_) {
-            // Ignore storage errors (private mode, quota, etc).
+            // Storage failed (private mode, quota, etc). Keep this state as
+            // the in-memory truth: getCurrentState() readers must not fall
+            // back to the stale stored copy, or a UI sweep would snap live
+            // values back for the rest of the session. The next save retries
+            // naturally — callers build from getCurrentState().
+            pendingState = sanitizeState(state);
         }
     }
 
@@ -639,16 +644,24 @@
             // stemState is the live internal array (no allocation, unlike
             // getState()); the API docs bless writing gain.gain.value
             // directly as the caller-side fast path.
-            const list = Array.isArray(window.stems.stemState)
+            const raw = Array.isArray(window.stems.stemState)
                 ? window.stems.stemState
                 : (typeof window.stems.getState === 'function' ? window.stems.getState() : null);
-            if (Array.isArray(list)) {
-                list.forEach((item) => {
-                    if (canonicalStemId(item && item.id) !== canonical) return;
-                    if (item.gain && item.gain.gain) item.gain.gain.value = clamped;
-                    if ('on' in item) item.on = true;
-                    if (item.audio) item.audio.muted = false;
-                });
+            const applyItem = (item, fallbackId) => {
+                if (!item || typeof item !== 'object') return;
+                if (canonicalStemId(item.id != null ? item.id : fallbackId) !== canonical) return;
+                if (item.gain && item.gain.gain) item.gain.gain.value = clamped;
+                if ('on' in item) item.on = true;
+                if (item.audio) item.audio.muted = false;
+            };
+            // Array (newer) or keyed object (older) — the same two getState()
+            // shapes stemsReachable() accepts. Without the object arm, a host
+            // whose only surface is object-form getState() would hear nothing
+            // until the flush.
+            if (Array.isArray(raw)) {
+                raw.forEach((item) => applyItem(item, null));
+            } else if (raw && typeof raw === 'object') {
+                Object.keys(raw).forEach((key) => applyItem(raw[key], key));
             }
         }
 
