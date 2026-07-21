@@ -193,15 +193,16 @@
         if (pendingFlushTimer) { clearTimeout(pendingFlushTimer); pendingFlushTimer = null; }
         pendingState = null;
         applyPendingDragLevels();
+        const sanitized = sanitizeState(state);
         try {
-            localStorage.setItem(STATE_KEY, JSON.stringify(sanitizeState(state)));
+            localStorage.setItem(STATE_KEY, JSON.stringify(sanitized));
         } catch (_) {
             // Storage failed (private mode, quota, etc). Keep this state as
             // the in-memory truth: getCurrentState() readers must not fall
             // back to the stale stored copy, or a UI sweep would snap live
             // values back for the rest of the session. The next save retries
             // naturally — callers build from getCurrentState().
-            pendingState = sanitizeState(state);
+            pendingState = sanitized;
         }
     }
 
