@@ -212,7 +212,16 @@
         const staged = pendingDragLevels;
         pendingDragLevels = Object.create(null);
         Object.keys(staged).forEach((stem) => {
-            setStemVolumeViaStemsApi(stem, staged[stem]);
+            try {
+                setStemVolumeViaStemsApi(stem, staged[stem]);
+            } catch (e) {
+                // The stems plugin can throw mid-rebuild (stemsReachable()
+                // expects the same). Don't let one stem abort the caller's
+                // save or drop the rest — re-stage it (unless a newer level
+                // arrived meanwhile) so the next flush/save retries. The
+                // audible gain already landed via previewStemVolume().
+                if (!(stem in pendingDragLevels)) pendingDragLevels[stem] = staged[stem];
+            }
         });
     }
 
@@ -1796,7 +1805,7 @@
         module.exports = {
             STEM_KEYS, EQ_BANDS, DEFAULT_STATE, STEM_ALIASES,
             sanitizeState, cloneState, canonicalStemId, safeDecodeUrl, stemIdFromUrl,
-            loadState, saveState, loadProfiles, saveProfiles,
+            loadState, saveState, getCurrentState, loadProfiles, saveProfiles,
             normalizeAvailableStems, levelFor,
             extractStemMeta, stemDisplayName, sameStemSet, STEM_LABELS,
         };
