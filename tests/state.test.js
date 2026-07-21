@@ -265,3 +265,34 @@ test('loadProfiles tolerates corrupt storage and non-object payloads', () => {
     global.localStorage.setItem('stem_mixer:profiles', '"a string"');
     assert.deepEqual(loadProfiles(), {});
 });
+
+test('saveState keeps in-memory truth when the storage write fails', () => {
+    const { saveState, getCurrentState } = freshPlugin();
+    // Seed a persisted baseline.
+    saveState({ levels: { vocals: 0.2 } });
+    assert.equal(getCurrentState().levels.vocals, 0.2);
+
+    // Break the store the way quota/private mode does. finally-restore so a
+    // failing assertion can't leave the broken setItem behind (freshPlugin()
+    // would rebuild localStorage anyway, but keep the teardown airtight).
+    const originalSetItem = global.localStorage.setItem;
+    try {
+        global.localStorage.setItem = () => { throw new Error('quota'); };
+        saveState({ levels: { vocals: 0.9 } });
+        // Reads must see the failed write, not regress to the stale stored
+        // 0.2 — otherwise a UI sweep would snap the live value back
+        // mid-session.
+        assert.equal(getCurrentState().levels.vocals, 0.9);
+    } finally {
+        global.localStorage.setItem = originalSetItem;
+    }
+
+    // Once storage recovers, the next save (built from getCurrentState, as
+    // every caller does) lands the in-memory truth on disk.
+    const next = getCurrentState();
+    next.levels.bass = 0.5;
+    saveState(next);
+    assert.equal(getCurrentState().levels.vocals, 0.9);
+    assert.equal(getCurrentState().levels.bass, 0.5);
+    assert.equal(JSON.parse(global.localStorage.getItem('stem_mixer:state')).levels.vocals, 0.9);
+});
