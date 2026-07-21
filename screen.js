@@ -273,8 +273,11 @@
         // localStorage — is the truth. Every reader (applyStoredState's
         // re-push, profile capture, autolevel) must see it, or a mid-drag UI
         // sweep would read the stale stored level and snap the volume back.
+        // The sanitize here doubles as a CLONE: callers mutate the returned
+        // state, and none of that may alias into pendingState. loadState()
+        // already returns a fresh sanitized object, so no second pass there.
         if (pendingState) return sanitizeState(pendingState);
-        return sanitizeState(loadState());
+        return loadState();
     }
 
     function isStemsPluginActive() {
