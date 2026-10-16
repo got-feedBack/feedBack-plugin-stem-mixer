@@ -21,7 +21,7 @@
 
 ```bash
 cd plugins
-git clone https://github.com/topkoa/slopsmith-plugin-stems.git stems
+git clone https://github.com/got-feedBack/feedBack-plugin-stems.git stems
 ```
 
 ## Installation
